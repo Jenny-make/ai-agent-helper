@@ -1,0 +1,49 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: spring-ai-feishu-cs-starter
+
+  ai:
+    deepseek:
+      base-url: ${SPRING_AI_DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      api-key: ${SPRING_AI_DEEPSEEK_API_KEY:}
+      chat:
+        options:
+          model: ${SPRING_AI_DEEPSEEK_CHAT_MODEL:deepseek-chat}
+          temperature: 0.2
+    openai:
+      base-url: ${SPRING_AI_OPENAI_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+      api-key: ${SPRING_AI_OPENAI_API_KEY:}
+      chat:
+        options:
+          model: ${SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL:qwen-max}
+          temperature: 0.2
+    vectorstore:
+      milvus:
+        client:
+          host: ${SPRING_AI_VECTORSTORE_MILVUS_CLIENT_HOST:127.0.0.1}
+          port: ${SPRING_AI_VECTORSTORE_MILVUS_CLIENT_PORT:19530}
+          username: ${SPRING_AI_VECTORSTORE_MILVUS_USERNAME:}
+          password: ${SPRING_AI_VECTORSTORE_MILVUS_PASSWORD:}
+          database-name: ${SPRING_AI_VECTORSTORE_MILVUS_DATABASE_NAME:default}
+        collection-name: ${SPRING_AI_VECTORSTORE_MILVUS_COLLECTION_NAME:customer_service_knowledge}
+        initialize-schema: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+
+app:
+  ai:
+    provider: ${APP_AI_PROVIDER:deepseek}
+    system-prompt: ${APP_SYSTEM_PROMPT:你是企业智能客服助手，回答必须准确、简洁，并优先基于知识库。}
+  feishu:
+    verification-token: ${APP_FEISHU_VERIFICATION_TOKEN:}
+    encrypt-key: ${APP_FEISHU_ENCRYPT_KEY:}
+    bot:
+      app-id: ${APP_FEISHU_BOT_APP_ID:}
+      app-secret: ${APP_FEISHU_BOT_APP_SECRET:}
