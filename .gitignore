@@ -4,3 +4,7 @@ build/
 *.iml
 out/
 .DS_Store
+
+# Local-only
+.gitconfig_codex
+.gradle-user/
