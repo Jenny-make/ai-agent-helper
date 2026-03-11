@@ -1,4 +1,4 @@
-﻿package com.example.customerservice.service;
+package com.example.customerservice.service;
 
 import com.example.customerservice.config.AiProviderProperties;
 import com.example.customerservice.config.RagProperties;
@@ -74,10 +74,13 @@ public class KnowledgeAnswerService {
 
         List<Document> documents;
         try {
-            SearchRequest request = SearchRequest.query(query).withTopK(ragProperties.topK());
+            SearchRequest.Builder builder = SearchRequest.builder()
+                    .query(query)
+                    .topK(ragProperties.topK());
             if (ragProperties.similarityThreshold() > 0) {
-                request = request.withSimilarityThreshold(ragProperties.similarityThreshold());
+                builder = builder.similarityThreshold(ragProperties.similarityThreshold());
             }
+            SearchRequest request = builder.build();
             documents = vectorStore.similaritySearch(request);
         } catch (Exception e) {
             return RetrievedKnowledge.empty();
@@ -94,7 +97,7 @@ public class KnowledgeAnswerService {
             if (document == null) {
                 continue;
             }
-            String content = Objects.toString(document.getContent(), "").trim();
+            String content = Objects.toString(document.getText(), "").trim();
             if (content.isEmpty()) {
                 continue;
             }
