@@ -2,9 +2,9 @@ package com.example.customerservice.service;
 
 import com.example.customerservice.config.ConversationMemoryProperties;
 import com.example.customerservice.model.ConversationTurn;
-import java.util.Arrays;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Deque;
 import java.util.List;
 import java.util.Objects;
@@ -75,8 +75,8 @@ public class ConversationMemoryService {
     public Optional<String> inferTopicSummary(String sessionId) {
         return getLatestTurn(sessionId)
                 .map(turn -> firstNonBlank(
-                        firstSentence(turn.assistantMessage()),
-                        firstSentence(turn.userMessage())
+                        firstSentence(turn.userMessage()),
+                        firstSentence(turn.assistantMessage())
                 ))
                 .filter(text -> !text.isBlank());
     }
@@ -111,7 +111,7 @@ public class ConversationMemoryService {
             return "";
         }
 
-        return Arrays.stream(value.split("(?<=[.!?。！？])\\s*", 2))
+        return Arrays.stream(value.split("(?<=[.!?\\u3002\\uFF01\\uFF1F])\\s*", 2))
                 .findFirst()
                 .orElse(value)
                 .trim();
