@@ -52,25 +52,30 @@ public class KnowledgeAnswerService {
     }
 
     public ReplyResult answer(CustomerMessage message) {
+        String currentQuestion = Objects.toString(message.text(), "").trim();
         List<ConversationTurn> recentTurns = conversationMemoryService.getRecentTurns(message.sessionId());
-        Optional<String> topicSummary = conversationMemoryService.inferTopicSummary(message.sessionId());
         Optional<ConversationTurn> latestTurn = conversationMemoryService.getLatestTurn(message.sessionId());
+        ResponseLanguage responseLanguage = determineResponseLanguage(currentQuestion);
+        boolean languageSwitchFollowUp = isLanguageSwitchFollowUp(currentQuestion, latestTurn);
+        boolean useConversationContext = shouldUseConversationContext(currentQuestion, languageSwitchFollowUp);
+        List<ConversationTurn> promptTurns = useConversationContext ? selectPromptTurns(recentTurns) : List.of();
+        Optional<String> topicSummary = useConversationContext
+                ? conversationMemoryService.inferTopicSummary(message.sessionId())
+                : Optional.empty();
 
-        if (isLikelyAmbiguousFollowUp(message.text()) && topicSummary.isEmpty()) {
-            return new ReplyResult(buildClarifyingQuestion(message.text()), aiProviderProperties.provider(), List.of());
+        if (isLikelyAmbiguousFollowUp(currentQuestion) && topicSummary.isEmpty()) {
+            return new ReplyResult(buildClarifyingQuestion(currentQuestion), aiProviderProperties.provider(), List.of());
         }
 
         ChatModel selectedModel = selectChatModel();
-        RetrievedKnowledge retrievedKnowledge = retrieveKnowledgeIfEnabled(message.text());
-        ResponseLanguage responseLanguage = determineResponseLanguage(message.text(), recentTurns);
-        boolean languageSwitchFollowUp = isLanguageSwitchFollowUp(message.text(), responseLanguage, latestTurn);
+        RetrievedKnowledge retrievedKnowledge = retrieveKnowledgeIfEnabled(currentQuestion);
 
         ChatClient chatClient = ChatClient.builder(selectedModel).build();
-        String answer = chatClient.prompt()
+        String rawAnswer = chatClient.prompt()
                 .system(buildSystemPrompt(retrievedKnowledge.knowledgeText(), responseLanguage, languageSwitchFollowUp))
                 .user(buildUserPrompt(
-                        message.text(),
-                        recentTurns,
+                        currentQuestion,
+                        promptTurns,
                         topicSummary.orElse(""),
                         responseLanguage,
                         languageSwitchFollowUp,
@@ -78,8 +83,9 @@ public class KnowledgeAnswerService {
                 ))
                 .call()
                 .content();
+        String answer = sanitizeModelAnswer(rawAnswer, responseLanguage, currentQuestion);
 
-        conversationMemoryService.appendExchange(message.sessionId(), message.text(), answer);
+        conversationMemoryService.appendExchange(message.sessionId(), currentQuestion, answer);
 
         return new ReplyResult(answer, aiProviderProperties.provider(), retrievedKnowledge.citations());
     }
@@ -221,6 +227,15 @@ public class KnowledgeAnswerService {
                 """.formatted(currentQuestion, responseLanguage.description, focusBlock, conversationTranscript);
     }
 
+    private List<ConversationTurn> selectPromptTurns(List<ConversationTurn> recentTurns) {
+        if (recentTurns == null || recentTurns.isEmpty()) {
+            return List.of();
+        }
+
+        int fromIndex = Math.max(recentTurns.size() - 2, 0);
+        return List.copyOf(recentTurns.subList(fromIndex, recentTurns.size()));
+    }
+
     private boolean isLikelyAmbiguousFollowUp(String text) {
         String value = Objects.toString(text, "").trim();
         if (value.isEmpty()) {
@@ -228,24 +243,27 @@ public class KnowledgeAnswerService {
         }
 
         String lower = value.toLowerCase(Locale.ROOT);
-        String[] englishSignals = {
-                "he", "him", "his", "she", "her", "hers",
-                "they", "them", "their", "it", "its", "that", "this", "those", "these"
-        };
-        for (String signal : englishSignals) {
-            if (lower.matches(".*\\b" + signal + "\\b.*")) {
-                return true;
+        if (lower.length() <= 48) {
+            String[] englishPatterns = {
+                    "^(and\\s+)?(him|her|them|this|that|those|these)\\??$",
+                    "^what about\\s+(him|her|them|this|that|those|these)\\??$",
+                    "^(who|what|why|how|where|when)\\s+(is|was|are|were)?\\s*(he|she|they|this|that|those|these)\\b.*$"
+            };
+            for (String pattern : englishPatterns) {
+                if (lower.matches(pattern)) {
+                    return true;
+                }
             }
         }
 
-        String[] chineseSignals = {
-                "\u4ed6", "\u5979", "\u5b83",
-                "\u4ed6\u4eec", "\u5979\u4eec", "\u5b83\u4eec",
-                "\u8fd9", "\u90a3", "\u8fd9\u4e2a", "\u90a3\u4e2a",
-                "\u8fd9\u4ef6\u4e8b", "\u90a3\u4ef6\u4e8b"
+        String compactChinese = value.replaceAll("\\s+", "");
+        String[] chinesePatterns = {
+                "^(他|她|它|他们|她们|它们)(呢|吗|是谁|是什么)?$",
+                "^(这个|那个|这件事|那件事)(呢|吗|是什么)?$",
+                "^(那他|那她|那它|这个人|那个人)(呢|吗|是谁)?$"
         };
-        for (String signal : chineseSignals) {
-            if (value.contains(signal)) {
+        for (String pattern : chinesePatterns) {
+            if (compactChinese.matches(pattern)) {
                 return true;
             }
         }
@@ -266,7 +284,7 @@ public class KnowledgeAnswerService {
                 .anyMatch(codePoint -> Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN);
     }
 
-    private ResponseLanguage determineResponseLanguage(String currentQuestion, List<ConversationTurn> recentTurns) {
+    private ResponseLanguage determineResponseLanguage(String currentQuestion) {
         ResponseLanguage explicit = detectExplicitLanguagePreference(currentQuestion);
         if (explicit != ResponseLanguage.AUTO) {
             return explicit;
@@ -274,19 +292,6 @@ public class KnowledgeAnswerService {
 
         if (containsChinese(currentQuestion)) {
             return ResponseLanguage.CHINESE;
-        }
-
-        if (recentTurns != null) {
-            for (int i = recentTurns.size() - 1; i >= 0; i--) {
-                String previousUserMessage = Objects.toString(recentTurns.get(i).userMessage(), "");
-                explicit = detectExplicitLanguagePreference(previousUserMessage);
-                if (explicit != ResponseLanguage.AUTO) {
-                    return explicit;
-                }
-                if (containsChinese(previousUserMessage)) {
-                    return ResponseLanguage.CHINESE;
-                }
-            }
         }
 
         return ResponseLanguage.AUTO;
@@ -312,10 +317,9 @@ public class KnowledgeAnswerService {
 
     private boolean isLanguageSwitchFollowUp(
             String currentQuestion,
-            ResponseLanguage responseLanguage,
             Optional<ConversationTurn> latestTurn
     ) {
-        if (responseLanguage == ResponseLanguage.AUTO || latestTurn.isEmpty()) {
+        if (latestTurn.isEmpty()) {
             return false;
         }
 
@@ -345,6 +349,49 @@ public class KnowledgeAnswerService {
                 .replace("?", "")
                 .toLowerCase(Locale.ROOT);
         return normalized;
+    }
+
+    private boolean shouldUseConversationContext(String currentQuestion, boolean languageSwitchFollowUp) {
+        if (languageSwitchFollowUp) {
+            return true;
+        }
+
+        if (isLikelyAmbiguousFollowUp(currentQuestion)) {
+            return true;
+        }
+
+        String normalized = normalizeIntentText(currentQuestion);
+        return containsAny(normalized,
+                "继续", "展开说说", "详细点", "再说说", "接着说",
+                "continue", "go on", "tell me more", "what about", "and then");
+    }
+
+    private String normalizeIntentText(String text) {
+        return Objects.toString(text, "")
+                .trim()
+                .replaceAll("\\s+", " ")
+                .toLowerCase(Locale.ROOT);
+    }
+
+    private String sanitizeModelAnswer(String answer, ResponseLanguage responseLanguage, String currentQuestion) {
+        String value = Objects.toString(answer, "").trim();
+        if (!value.isEmpty() && !looksLikePromptLeak(value)) {
+            return value;
+        }
+
+        if (responseLanguage == ResponseLanguage.CHINESE || containsChinese(currentQuestion)) {
+            return "抱歉，我刚刚没有正确处理这条消息。请直接重新发一次问题，我会只回复答案。";
+        }
+        return "Sorry, I didn't process that message correctly. Please send the question again and I'll answer directly.";
+    }
+
+    private boolean looksLikePromptLeak(String answer) {
+        String value = Objects.toString(answer, "");
+        return containsAny(value,
+                "<CURRENT_USER_MESSAGE>", "<RECENT_CONVERSATION>", "<PREVIOUS_USER_MESSAGE>", "<PREVIOUS_ASSISTANT_ANSWER>",
+                "Current user message:", "Preferred reply language:", "Conversation background for reference only:",
+                "Latest user instruction:", "Requested reply language:",
+                "当前用户消息", "首选回复语言", "当前对话重点", "对话背景仅供参考", "上一条助手回答");
     }
 
     private boolean containsAny(String text, String... fragments) {
