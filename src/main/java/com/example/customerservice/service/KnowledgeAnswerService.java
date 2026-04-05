@@ -54,6 +54,7 @@ public class KnowledgeAnswerService {
     public ReplyResult answer(CustomerMessage message) {
         List<ConversationTurn> recentTurns = conversationMemoryService.getRecentTurns(message.sessionId());
         Optional<String> topicSummary = conversationMemoryService.inferTopicSummary(message.sessionId());
+        Optional<ConversationTurn> latestTurn = conversationMemoryService.getLatestTurn(message.sessionId());
 
         if (isLikelyAmbiguousFollowUp(message.text()) && topicSummary.isEmpty()) {
             return new ReplyResult(buildClarifyingQuestion(message.text()), aiProviderProperties.provider(), List.of());
@@ -62,11 +63,19 @@ public class KnowledgeAnswerService {
         ChatModel selectedModel = selectChatModel();
         RetrievedKnowledge retrievedKnowledge = retrieveKnowledgeIfEnabled(message.text());
         ResponseLanguage responseLanguage = determineResponseLanguage(message.text(), recentTurns);
+        boolean languageSwitchFollowUp = isLanguageSwitchFollowUp(message.text(), responseLanguage, latestTurn);
 
         ChatClient chatClient = ChatClient.builder(selectedModel).build();
         String answer = chatClient.prompt()
-                .system(buildSystemPrompt(retrievedKnowledge.knowledgeText(), responseLanguage))
-                .user(buildUserPrompt(message.text(), recentTurns, topicSummary.orElse(""), responseLanguage))
+                .system(buildSystemPrompt(retrievedKnowledge.knowledgeText(), responseLanguage, languageSwitchFollowUp))
+                .user(buildUserPrompt(
+                        message.text(),
+                        recentTurns,
+                        topicSummary.orElse(""),
+                        responseLanguage,
+                        languageSwitchFollowUp,
+                        latestTurn.orElse(null)
+                ))
                 .call()
                 .content();
 
@@ -79,7 +88,11 @@ public class KnowledgeAnswerService {
         return vectorStoreProvider.getIfAvailable() != null;
     }
 
-    private String buildSystemPrompt(String knowledge, ResponseLanguage responseLanguage) {
+    private String buildSystemPrompt(
+            String knowledge,
+            ResponseLanguage responseLanguage,
+            boolean languageSwitchFollowUp
+    ) {
         boolean hasKnowledge = knowledge != null && !knowledge.isBlank();
 
         String base = Objects.toString(aiProviderProperties.systemPrompt(), "").trim();
@@ -98,6 +111,12 @@ public class KnowledgeAnswerService {
                 .append("If the latest user message is ambiguous, interpret it using recent conversation context first.\n")
                 .append("If it is still ambiguous, ask a short clarifying question instead of making a risky assumption.\n")
                 .append("Do not guess a person, company, product, order, or event if the reference is unclear.\n");
+
+        if (languageSwitchFollowUp) {
+            sb.append("The latest user message is a language-switch request for the previous answer.\n")
+                    .append("Rewrite the most recent assistant answer in the requested language.\n")
+                    .append("Preserve the original meaning, keep it concise, and do not answer a new question.\n");
+        }
 
         if (hasKnowledge) {
             sb.append("\n")
@@ -119,7 +138,9 @@ public class KnowledgeAnswerService {
             String currentQuestion,
             List<ConversationTurn> recentTurns,
             String topicSummary,
-            ResponseLanguage responseLanguage
+            ResponseLanguage responseLanguage,
+            boolean languageSwitchFollowUp,
+            ConversationTurn latestTurn
     ) {
         String focusBlock = topicSummary == null || topicSummary.isBlank()
                 ? ""
@@ -130,6 +151,36 @@ public class KnowledgeAnswerService {
                 </FOCUS>
 
                 """.formatted(topicSummary);
+
+        if (languageSwitchFollowUp && latestTurn != null) {
+            return """
+                    Latest user instruction:
+                    <CURRENT_USER_MESSAGE>
+                    %s
+                    </CURRENT_USER_MESSAGE>
+
+                    Requested reply language:
+                    %s
+
+                    Previous user question:
+                    <PREVIOUS_USER_MESSAGE>
+                    %s
+                    </PREVIOUS_USER_MESSAGE>
+
+                    Previous assistant answer:
+                    <PREVIOUS_ASSISTANT_ANSWER>
+                    %s
+                    </PREVIOUS_ASSISTANT_ANSWER>
+
+                    Rewrite the previous assistant answer in the requested reply language.
+                    Preserve the meaning, keep the same topic, and do not add extra framing.
+                    """.formatted(
+                    currentQuestion,
+                    responseLanguage.description,
+                    Objects.toString(latestTurn.userMessage(), ""),
+                    Objects.toString(latestTurn.assistantMessage(), "")
+            );
+        }
 
         if (recentTurns == null || recentTurns.isEmpty()) {
             return """
@@ -257,6 +308,43 @@ public class KnowledgeAnswerService {
         }
 
         return ResponseLanguage.AUTO;
+    }
+
+    private boolean isLanguageSwitchFollowUp(
+            String currentQuestion,
+            ResponseLanguage responseLanguage,
+            Optional<ConversationTurn> latestTurn
+    ) {
+        if (responseLanguage == ResponseLanguage.AUTO || latestTurn.isEmpty()) {
+            return false;
+        }
+
+        String normalized = normalizeLanguageSwitchMessage(currentQuestion);
+        if (normalized.isEmpty()) {
+            return false;
+        }
+
+        return switch (normalized) {
+            case "中文", "用中文", "请用中文", "中文回答", "用中文回答", "请用中文回答",
+                    "中文回复", "用中文回复", "请用中文回复",
+                    "英文", "用英文", "请用英文", "英文回答", "用英文回答", "请用英文回答",
+                    "英文回复", "用英文回复", "请用英文回复" -> true;
+            default -> false;
+        };
+    }
+
+    private String normalizeLanguageSwitchMessage(String text) {
+        String normalized = Objects.toString(text, "")
+                .trim()
+                .replaceAll("\\s+", "")
+                .replace("。", "")
+                .replace("！", "")
+                .replace("？", "")
+                .replace(".", "")
+                .replace("!", "")
+                .replace("?", "")
+                .toLowerCase(Locale.ROOT);
+        return normalized;
     }
 
     private boolean containsAny(String text, String... fragments) {
