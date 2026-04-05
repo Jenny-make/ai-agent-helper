@@ -56,6 +56,7 @@ Note: vector search needs embeddings configured in your Spring AI setup. If you 
 ## Session memory
 
 Console Q&A keeps a lightweight in-memory session history by `sessionId`.
+If a follow-up question contains unclear references like `he`, `she`, `it`, `that`, `这个`, `那个` and there is not enough context, the app now asks a clarifying question instead of guessing.
 
 Useful env vars:
 
