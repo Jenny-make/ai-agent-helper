@@ -20,6 +20,13 @@ spring:
         options:
           model: ${SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL:qwen-max}
           temperature: 0.2
+    minimax:
+      base-url: ${SPRING_AI_MINIMAX_BASE_URL:https://api.minimax.chat}
+      api-key: ${SPRING_AI_MINIMAX_API_KEY:}
+      chat:
+        options:
+          model: ${SPRING_AI_MINIMAX_CHAT_OPTIONS_MODEL:abab6.5g-chat}
+          temperature: 0.2
     vectorstore:
       milvus:
         client:
@@ -41,7 +48,7 @@ app:
   console:
     enabled: ${APP_CONSOLE_ENABLED:false}
   ai:
-    provider: ${APP_AI_PROVIDER:deepseek}
+    provider: ${APP_AI_PROVIDER:auto}
     system-prompt: ${APP_SYSTEM_PROMPT:You are a helpful customer support assistant. Answer clearly and concisely.}
   rag:
     enabled: ${APP_RAG_ENABLED:false}
