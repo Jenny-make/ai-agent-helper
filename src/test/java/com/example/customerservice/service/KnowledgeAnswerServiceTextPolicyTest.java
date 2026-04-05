@@ -40,8 +40,9 @@ class KnowledgeAnswerServiceTextPolicyTest {
     void standaloneQuestionDoesNotUseConversationContext() throws Exception {
         boolean useConversationContext = (boolean) invoke(
                 "shouldUseConversationContext",
-                new Class<?>[]{String.class, boolean.class},
+                new Class<?>[]{String.class, boolean.class, boolean.class},
                 "who is kobe?",
+                false,
                 false
         );
 
@@ -57,13 +58,25 @@ class KnowledgeAnswerServiceTextPolicyTest {
         );
         boolean useConversationContext = (boolean) invoke(
                 "shouldUseConversationContext",
-                new Class<?>[]{String.class, boolean.class},
+                new Class<?>[]{String.class, boolean.class, boolean.class},
                 "what about him?",
-                false
+                false,
+                true
         );
 
         assertTrue(ambiguous);
         assertTrue(useConversationContext);
+    }
+
+    @Test
+    void pronounFollowUpIsTreatedAsAmbiguous() throws Exception {
+        boolean ambiguous = (boolean) invoke(
+                "isLikelyAmbiguousFollowUp",
+                new Class<?>[]{String.class},
+                "how many champions did he win"
+        );
+
+        assertTrue(ambiguous);
     }
 
     @Test
@@ -86,6 +99,17 @@ class KnowledgeAnswerServiceTextPolicyTest {
         );
 
         assertTrue(promptLeak);
+    }
+
+    @Test
+    void metaResponsePatternIsDetected() throws Exception {
+        boolean metaResponse = (boolean) invoke(
+                "looksLikeMetaResponse",
+                new Class<?>[]{String.class},
+                "The current user message is asking how many champions did he win. The user is asking for a specific number."
+        );
+
+        assertTrue(metaResponse);
     }
 
     private Object invoke(String methodName, Class<?>[] parameterTypes, Object... args) throws Exception {

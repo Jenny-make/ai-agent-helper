@@ -63,6 +63,30 @@ class FeishuWebhookServiceTest {
     }
 
     @Test
+    void mentionWithoutWhitespaceIsSanitizedUsingMentionMetadata() {
+        KnowledgeAnswerService knowledgeAnswerService = mock(KnowledgeAnswerService.class);
+        FeishuMessageService feishuMessageService = mock(FeishuMessageService.class);
+        FeishuWebhookService service = new FeishuWebhookService(
+                new FeishuProperties("https://open.feishu.cn/open-apis", "", "", null),
+                knowledgeAnswerService,
+                feishuMessageService,
+                new ObjectMapper()
+        );
+        when(knowledgeAnswerService.answer(any())).thenReturn(new ReplyResult("Java GC answer", "test", List.of()));
+
+        String content = "{\"text\":\"@智能助手了解java gc吗\",\"mentions\":[{\"key\":\"@智能助手\",\"name\":\"智能助手\"}]}";
+        FeishuWebhookRequest request = buildRequest("group", content, "evt-2b", "msg-2b", "chat-2", "", "user-2", true);
+
+        var result = service.handleEvent(request);
+
+        assertTrue(result.isPresent());
+
+        ArgumentCaptor<CustomerMessage> captor = ArgumentCaptor.forClass(CustomerMessage.class);
+        verify(knowledgeAnswerService).answer(captor.capture());
+        assertEquals("了解java gc吗", captor.getValue().text());
+    }
+
+    @Test
     void duplicateDeliveryIsIgnored() {
         KnowledgeAnswerService knowledgeAnswerService = mock(KnowledgeAnswerService.class);
         FeishuMessageService feishuMessageService = mock(FeishuMessageService.class);
@@ -91,6 +115,19 @@ class FeishuWebhookServiceTest {
             String rootId,
             String userId
     ) {
+        return buildRequest(chatType, text, eventId, messageId, chatId, rootId, userId, false);
+    }
+
+    private FeishuWebhookRequest buildRequest(
+            String chatType,
+            String content,
+            String eventId,
+            String messageId,
+            String chatId,
+            String rootId,
+            String userId,
+            boolean rawContent
+    ) {
         return new FeishuWebhookRequest(
                 null,
                 null,
@@ -111,7 +148,7 @@ class FeishuWebhookServiceTest {
                                 chatId,
                                 chatType,
                                 "text",
-                                "{\"text\":\"" + text + "\"}"
+                                rawContent ? content : "{\"text\":\"" + content + "\"}"
                         )
                 )
         );

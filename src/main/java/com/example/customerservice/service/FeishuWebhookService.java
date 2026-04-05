@@ -5,9 +5,12 @@ import com.example.customerservice.model.CustomerMessage;
 import com.example.customerservice.model.ReplyResult;
 import com.example.customerservice.model.feishu.FeishuWebhookRequest;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
@@ -112,13 +115,29 @@ public class FeishuWebhookService {
     }
 
     private ParsedIncomingMessage parseIncomingMessage(FeishuWebhookRequest request) {
-        String rawText = extractTextContent(request.event().message().content());
-        if (rawText.isBlank()) {
+        String rawContent = request.event().message().content();
+        if (Objects.toString(rawContent, "").isBlank()) {
             return null;
         }
 
-        String sanitizedText = sanitizeIncomingText(rawText);
-        return new ParsedIncomingMessage(rawText, sanitizedText);
+        try {
+            JsonNode root = objectMapper.readTree(rawContent);
+            String rawText = root.path("text").asText("").trim();
+            if (rawText.isBlank()) {
+                return null;
+            }
+
+            List<String> mentionPrefixes = extractMentionPrefixes(root.path("mentions"));
+            String sanitizedText = sanitizeIncomingText(rawText, mentionPrefixes);
+            return new ParsedIncomingMessage(rawText, sanitizedText, !mentionPrefixes.isEmpty());
+        } catch (Exception e) {
+            String rawText = extractTextContent(rawContent);
+            if (rawText.isBlank()) {
+                return null;
+            }
+            String sanitizedText = sanitizeIncomingText(rawText, List.of());
+            return new ParsedIncomingMessage(rawText, sanitizedText, looksLikeBotMention(rawText));
+        }
     }
 
     private String extractTextContent(String rawContent) {
@@ -135,10 +154,12 @@ public class FeishuWebhookService {
         }
     }
 
-    private String sanitizeIncomingText(String rawText) {
+    private String sanitizeIncomingText(String rawText, List<String> mentionPrefixes) {
         String sanitized = Objects.toString(rawText, "")
                 .replace('\u00A0', ' ')
                 .trim();
+
+        sanitized = stripKnownMentions(sanitized, mentionPrefixes);
 
         while (sanitized.startsWith("@")) {
             int mentionEnd = findLeadingMentionEnd(sanitized);
@@ -151,10 +172,45 @@ public class FeishuWebhookService {
         return sanitized.replaceAll("\\s+", " ").trim();
     }
 
+    private String stripKnownMentions(String text, List<String> mentionPrefixes) {
+        String sanitized = Objects.toString(text, "").trim();
+        if (mentionPrefixes == null || mentionPrefixes.isEmpty()) {
+            return sanitized;
+        }
+
+        List<String> sortedPrefixes = mentionPrefixes.stream()
+                .filter(prefix -> prefix != null && !prefix.isBlank())
+                .distinct()
+                .sorted(Comparator.comparingInt(String::length).reversed())
+                .toList();
+
+        boolean removed;
+        do {
+            removed = false;
+            for (String prefix : sortedPrefixes) {
+                if (!sanitized.startsWith(prefix)) {
+                    continue;
+                }
+                sanitized = sanitized.substring(prefix.length()).trim();
+                removed = true;
+                break;
+            }
+        } while (removed && sanitized.startsWith("@"));
+
+        return sanitized;
+    }
+
     private int findLeadingMentionEnd(String text) {
+        if (!Objects.toString(text, "").startsWith("@")) {
+            return 0;
+        }
+
         int index = 0;
         while (index < text.length() && !Character.isWhitespace(text.charAt(index))) {
             index++;
+        }
+        if (index >= text.length()) {
+            return -1;
         }
         while (index < text.length() && Character.isWhitespace(text.charAt(index))) {
             index++;
@@ -175,7 +231,7 @@ public class FeishuWebhookService {
             return true;
         }
 
-        return looksLikeBotMention(parsedIncomingMessage.rawText());
+        return parsedIncomingMessage.hasExplicitMention() || looksLikeBotMention(parsedIncomingMessage.rawText());
     }
 
     private boolean looksLikeBotMention(String rawText) {
@@ -260,6 +316,26 @@ public class FeishuWebhookService {
         return "";
     }
 
-    private record ParsedIncomingMessage(String rawText, String text) {
+    private List<String> extractMentionPrefixes(JsonNode mentionsNode) {
+        if (mentionsNode == null || !mentionsNode.isArray()) {
+            return List.of();
+        }
+
+        List<String> prefixes = new ArrayList<>();
+        for (JsonNode mentionNode : mentionsNode) {
+            String key = mentionNode.path("key").asText("").trim();
+            if (!key.isEmpty()) {
+                prefixes.add(key);
+            }
+
+            String name = mentionNode.path("name").asText("").trim();
+            if (!name.isEmpty()) {
+                prefixes.add(name.startsWith("@") ? name : "@" + name);
+            }
+        }
+        return prefixes;
+    }
+
+    private record ParsedIncomingMessage(String rawText, String text, boolean hasExplicitMention) {
     }
 }
