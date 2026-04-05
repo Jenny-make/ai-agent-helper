@@ -60,6 +60,7 @@ app:
     similarity-threshold: ${APP_RAG_SIMILARITY_THRESHOLD:0.0}
     max-chars-per-doc: ${APP_RAG_MAX_CHARS_PER_DOC:1200}
   feishu:
+    base-url: ${APP_FEISHU_BASE_URL:https://open.feishu.cn/open-apis}
     verification-token: ${APP_FEISHU_VERIFICATION_TOKEN:}
     encrypt-key: ${APP_FEISHU_ENCRYPT_KEY:}
     bot:
