@@ -1,8 +1,9 @@
-﻿# Console Q&A
+# Console Q&A
 
 This repo includes a minimal console Q&A runner so you can verify:
 - Chat calls work (DeepSeek / MiniMax / OpenAI-compatible)
 - Optional Milvus vector retrieval can be enabled later
+- Recent turns can be reused inside one console session
 
 ## Run (MiniMax)
 
@@ -20,6 +21,13 @@ $env:SPRING_AI_MINIMAX_API_KEY="<your-key>"
 ```
 
 Type your question in the console. Type `exit` to quit.
+
+Console commands:
+
+- `/new` start a fresh session
+- `/history` show recent turns in the current session
+- `/session` show current session id
+- `/help` show available commands
 
 ## Run (DeepSeek)
 
@@ -45,3 +53,12 @@ If you have Milvus running and the vector store is reachable:
 
 Note: vector search needs embeddings configured in your Spring AI setup. If you hit errors during similarity search, keep `APP_RAG_ENABLED=false` until embeddings + Milvus are ready.
 
+## Session memory
+
+Console Q&A keeps a lightweight in-memory session history by `sessionId`.
+
+Useful env vars:
+
+- `APP_MEMORY_ENABLED=true`
+- `APP_MEMORY_MAX_TURNS=6`
+- `APP_MEMORY_MAX_CHARS_PER_MESSAGE=1200`

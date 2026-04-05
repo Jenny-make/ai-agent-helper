@@ -1,6 +1,7 @@
 package com.example.customerservice.console;
 
 import com.example.customerservice.model.CustomerMessage;
+import com.example.customerservice.service.ConversationMemoryService;
 import com.example.customerservice.service.KnowledgeAnswerService;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -9,6 +10,7 @@ import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -20,10 +22,16 @@ import org.springframework.stereotype.Component;
 public class ConsoleQaRunner implements ApplicationRunner {
 
     private final KnowledgeAnswerService knowledgeAnswerService;
+    private final ConversationMemoryService conversationMemoryService;
     private final Environment environment;
 
-    public ConsoleQaRunner(KnowledgeAnswerService knowledgeAnswerService, Environment environment) {
+    public ConsoleQaRunner(
+            KnowledgeAnswerService knowledgeAnswerService,
+            ConversationMemoryService conversationMemoryService,
+            Environment environment
+    ) {
         this.knowledgeAnswerService = knowledgeAnswerService;
+        this.conversationMemoryService = conversationMemoryService;
         this.environment = environment;
     }
 
@@ -39,8 +47,12 @@ public class ConsoleQaRunner implements ApplicationRunner {
 
         System.out.println("Console Q&A enabled. Type your question and press Enter.");
         System.out.println("Type 'exit' to quit.");
+        System.out.println("Commands: /new, /history, /session, /help, exit");
         int timeoutSeconds = parseIntEnv("APP_CONSOLE_TIMEOUT_SECONDS", 120);
-        System.out.println("Timeout: " + timeoutSeconds + "s (env APP_CONSOLE_TIMEOUT_SECONDS)." );
+        System.out.println("Timeout: " + timeoutSeconds + "s (env APP_CONSOLE_TIMEOUT_SECONDS).");
+        AtomicInteger sessionCounter = new AtomicInteger(1);
+        String sessionId = nextSessionId(sessionCounter);
+        System.out.println("Session: " + sessionId);
 
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
@@ -58,8 +70,24 @@ public class ConsoleQaRunner implements ApplicationRunner {
                 if ("exit".equalsIgnoreCase(question) || "quit".equalsIgnoreCase(question)) {
                     return;
                 }
+                if (question.startsWith("/")) {
+                    if ("/new".equalsIgnoreCase(question)) {
+                        conversationMemoryService.clearSession(sessionId);
+                        sessionId = nextSessionId(sessionCounter);
+                        System.out.println("Started new session: " + sessionId);
+                    } else if ("/history".equalsIgnoreCase(question)) {
+                        System.out.println(conversationMemoryService.formatHistory(sessionId));
+                    } else if ("/session".equalsIgnoreCase(question)) {
+                        System.out.println("Current session: " + sessionId);
+                    } else if ("/help".equalsIgnoreCase(question)) {
+                        System.out.println("Commands: /new, /history, /session, /help, exit");
+                    } else {
+                        System.out.println("Unknown command. Try /help");
+                    }
+                    continue;
+                }
 
-                var message = new CustomerMessage("console-user", "console-session", question);
+                var message = new CustomerMessage("console-user", sessionId, question);
 
                 System.out.println("Thinking...");
                 System.out.flush();
@@ -85,5 +113,9 @@ public class ConsoleQaRunner implements ApplicationRunner {
         } catch (NumberFormatException e) {
             return defaultValue;
         }
+    }
+
+    private static String nextSessionId(AtomicInteger sessionCounter) {
+        return "console-session-" + sessionCounter.getAndIncrement();
     }
 }

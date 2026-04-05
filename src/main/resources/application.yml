@@ -1,4 +1,4 @@
-﻿server:
+server:
   port: 8080
 
 spring:
@@ -50,6 +50,10 @@ app:
   ai:
     provider: ${APP_AI_PROVIDER:auto}
     system-prompt: ${APP_SYSTEM_PROMPT:You are a helpful customer support assistant. Answer clearly and concisely.}
+  memory:
+    enabled: ${APP_MEMORY_ENABLED:true}
+    max-turns: ${APP_MEMORY_MAX_TURNS:6}
+    max-chars-per-message: ${APP_MEMORY_MAX_CHARS_PER_MESSAGE:1200}
   rag:
     enabled: ${APP_RAG_ENABLED:false}
     top-k: ${APP_RAG_TOP_K:4}
