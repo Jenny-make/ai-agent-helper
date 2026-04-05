@@ -63,3 +63,4 @@ Useful env vars:
 - `APP_MEMORY_ENABLED=true`
 - `APP_MEMORY_MAX_TURNS=6`
 - `APP_MEMORY_MAX_CHARS_PER_MESSAGE=1200`
+- `APP_CONSOLE_CHARSET=GBK` on classic Windows PowerShell if Chinese input looks garbled; use `UTF-8` on terminals already configured for UTF-8

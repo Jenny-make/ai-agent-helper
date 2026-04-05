@@ -5,7 +5,7 @@ import com.example.customerservice.service.ConversationMemoryService;
 import com.example.customerservice.service.KnowledgeAnswerService;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
+import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -42,8 +42,10 @@ public class ConsoleQaRunner implements ApplicationRunner {
 
         String mmBaseUrl = environment.getProperty("spring.ai.minimax.base-url");
         String mmKey = environment.getProperty("spring.ai.minimax.api-key");
+        Charset consoleCharset = resolveConsoleCharset();
         System.out.println("spring.ai.minimax.base-url: " + mmBaseUrl);
         System.out.println("spring.ai.minimax.api-key set: " + (mmKey != null && !mmKey.isBlank()));
+        System.out.println("console.charset: " + consoleCharset.displayName());
 
         System.out.println("Console Q&A enabled. Type your question and press Enter.");
         System.out.println("Type 'exit' to quit.");
@@ -55,7 +57,7 @@ public class ConsoleQaRunner implements ApplicationRunner {
         System.out.println("Session: " + sessionId);
 
         try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
+                new InputStreamReader(System.in, consoleCharset))) {
             while (true) {
                 System.out.print("> ");
                 String line = reader.readLine();
@@ -117,5 +119,29 @@ public class ConsoleQaRunner implements ApplicationRunner {
 
     private static String nextSessionId(AtomicInteger sessionCounter) {
         return "console-session-" + sessionCounter.getAndIncrement();
+    }
+
+    private Charset resolveConsoleCharset() {
+        String configured = firstNonBlank(
+                System.getenv("APP_CONSOLE_CHARSET"),
+                environment.getProperty("app.console.charset")
+        );
+        if (!configured.isBlank()) {
+            return Charset.forName(configured.trim());
+        }
+
+        if (System.console() != null) {
+            return System.console().charset();
+        }
+        return Charset.defaultCharset();
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return "";
     }
 }
