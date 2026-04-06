@@ -176,6 +176,18 @@ class KnowledgeAnswerServiceTextPolicyTest {
         assertTrue(retained);
     }
 
+    @Test
+    void chineseRewriteRequestIsRecognizedAsLanguageSwitchFollowUp() throws Exception {
+        boolean languageSwitchFollowUp = (boolean) invoke(
+                "isLanguageSwitchFollowUp",
+                new Class<?>[]{String.class, Optional.class},
+                "\u7528\u4e2d\u6587\u91cd\u65b0\u56de\u7b54\u4e0a\u4e00\u4e2a\u95ee\u9898",
+                Optional.of(new ConversationTurn("how many championships did he win?", "He won five championships."))
+        );
+
+        assertTrue(languageSwitchFollowUp);
+    }
+
     private Object invoke(String methodName, Class<?>[] parameterTypes, Object... args) throws Exception {
         Method method = KnowledgeAnswerService.class.getDeclaredMethod(methodName, parameterTypes);
         method.setAccessible(true);
