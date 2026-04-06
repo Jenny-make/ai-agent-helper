@@ -54,6 +54,8 @@ app:
     enabled: ${APP_MEMORY_ENABLED:true}
     max-turns: ${APP_MEMORY_MAX_TURNS:6}
     max-chars-per-message: ${APP_MEMORY_MAX_CHARS_PER_MESSAGE:1200}
+    prompt-recent-turns: ${APP_MEMORY_PROMPT_RECENT_TURNS:4}
+    max-summary-chars: ${APP_MEMORY_MAX_SUMMARY_CHARS:1200}
   rag:
     enabled: ${APP_RAG_ENABLED:false}
     top-k: ${APP_RAG_TOP_K:4}

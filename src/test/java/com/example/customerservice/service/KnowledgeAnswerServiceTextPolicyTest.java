@@ -8,7 +8,9 @@ import static org.mockito.Mockito.mock;
 import com.example.customerservice.config.AiProviderProperties;
 import com.example.customerservice.config.ConversationMemoryProperties;
 import com.example.customerservice.config.RagProperties;
+import com.example.customerservice.model.ConversationTurn;
 import java.lang.reflect.Method;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
@@ -26,7 +28,7 @@ class KnowledgeAnswerServiceTextPolicyTest {
                 mock(ObjectProvider.class),
                 mock(ObjectProvider.class),
                 mock(ObjectProvider.class),
-                new ConversationMemoryService(new ConversationMemoryProperties(true, 6, 1200))
+                new ConversationMemoryService(new ConversationMemoryProperties(true, 6, 1200, 4, 1200))
         );
     }
 
@@ -110,6 +112,38 @@ class KnowledgeAnswerServiceTextPolicyTest {
         );
 
         assertTrue(metaResponse);
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void conversationSummaryIsIncludedInPromptAlongsideRecentConversation() throws Exception {
+        Class<?> responseLanguageClass = Class.forName(
+                "com.example.customerservice.service.KnowledgeAnswerService$ResponseLanguage"
+        );
+        Object auto = Enum.valueOf((Class<? extends Enum>) responseLanguageClass.asSubclass(Enum.class), "AUTO");
+
+        String prompt = (String) invoke(
+                "buildUserPrompt",
+                new Class<?>[]{
+                        String.class,
+                        List.class,
+                        String.class,
+                        responseLanguageClass,
+                        boolean.class,
+                        boolean.class,
+                        ConversationTurn.class
+                },
+                "what about the refund timeline?",
+                List.of(new ConversationTurn("I want a refund for order 12345", "Please share the order number.")),
+                "Topic: refund request\n- User asked: I want a refund for order 12345.",
+                auto,
+                false,
+                true,
+                new ConversationTurn("I want a refund for order 12345", "Please share the order number.")
+        );
+
+        assertTrue(prompt.contains("<CONVERSATION_SUMMARY>"));
+        assertTrue(prompt.contains("<RECENT_CONVERSATION>"));
     }
 
     private Object invoke(String methodName, Class<?>[] parameterTypes, Object... args) throws Exception {

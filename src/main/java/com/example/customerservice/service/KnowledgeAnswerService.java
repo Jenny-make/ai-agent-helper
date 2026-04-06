@@ -5,6 +5,8 @@ import com.example.customerservice.config.RagProperties;
 import com.example.customerservice.model.ConversationTurn;
 import com.example.customerservice.model.CustomerMessage;
 import com.example.customerservice.model.ReplyResult;
+import com.example.customerservice.model.SessionContextWindow;
+import com.example.customerservice.model.SessionSummary;
 import java.time.LocalDate;
 import java.time.format.TextStyle;
 import java.util.ArrayList;
@@ -55,18 +57,18 @@ public class KnowledgeAnswerService {
 
     public ReplyResult answer(CustomerMessage message) {
         String currentQuestion = Objects.toString(message.text(), "").trim();
-        List<ConversationTurn> recentTurns = conversationMemoryService.getRecentTurns(message.sessionId());
-        Optional<ConversationTurn> latestTurn = conversationMemoryService.getLatestTurn(message.sessionId());
+        SessionContextWindow contextWindow = conversationMemoryService.getContextWindow(message.sessionId());
+        Optional<ConversationTurn> latestTurn = contextWindow.latestTurn();
         ResponseLanguage responseLanguage = determineResponseLanguage(currentQuestion);
         boolean languageSwitchFollowUp = isLanguageSwitchFollowUp(currentQuestion, latestTurn);
         boolean ambiguousFollowUp = isLikelyAmbiguousFollowUp(currentQuestion);
         boolean useConversationContext = shouldUseConversationContext(currentQuestion, languageSwitchFollowUp, ambiguousFollowUp);
-        List<ConversationTurn> promptTurns = useConversationContext ? selectPromptTurns(recentTurns) : List.of();
-        Optional<String> topicSummary = useConversationContext
-                ? conversationMemoryService.inferTopicSummary(message.sessionId())
-                : Optional.empty();
+        List<ConversationTurn> promptTurns = useConversationContext ? contextWindow.promptTurns() : List.of();
+        String conversationSummary = useConversationContext
+                ? contextWindow.summary().map(this::renderConversationSummary).orElse("")
+                : "";
 
-        if (ambiguousFollowUp && topicSummary.isEmpty()) {
+        if (ambiguousFollowUp && conversationSummary.isBlank() && promptTurns.isEmpty()) {
             return new ReplyResult(buildClarifyingQuestion(currentQuestion), aiProviderProperties.provider(), List.of());
         }
 
@@ -79,7 +81,7 @@ public class KnowledgeAnswerService {
                 .user(buildUserPrompt(
                         currentQuestion,
                         promptTurns,
-                        topicSummary.orElse(""),
+                        conversationSummary,
                         responseLanguage,
                         languageSwitchFollowUp,
                         ambiguousFollowUp,
@@ -150,21 +152,21 @@ public class KnowledgeAnswerService {
     private String buildUserPrompt(
             String currentQuestion,
             List<ConversationTurn> recentTurns,
-            String topicSummary,
+            String conversationSummary,
             ResponseLanguage responseLanguage,
             boolean languageSwitchFollowUp,
             boolean ambiguousFollowUp,
             ConversationTurn latestTurn
     ) {
-        String focusBlock = topicSummary == null || topicSummary.isBlank()
+        String summaryBlock = conversationSummary == null || conversationSummary.isBlank()
                 ? ""
                 : """
-                Current conversation focus:
-                <FOCUS>
+                Conversation summary:
+                <CONVERSATION_SUMMARY>
                 %s
-                </FOCUS>
+                </CONVERSATION_SUMMARY>
 
-                """.formatted(topicSummary);
+                """.formatted(conversationSummary);
 
         if (languageSwitchFollowUp && latestTurn != null) {
             return """
@@ -218,7 +220,7 @@ public class KnowledgeAnswerService {
                     <RECENT_CONVERSATION>
                     %s
                     </RECENT_CONVERSATION>
-                    """.formatted(currentQuestion, responseLanguage.description, focusBlock, conversationTranscript);
+                    """.formatted(currentQuestion, responseLanguage.description, summaryBlock, conversationTranscript);
         }
 
         if (recentTurns == null || recentTurns.isEmpty()) {
@@ -232,7 +234,7 @@ public class KnowledgeAnswerService {
                     %s
 
                     %sPlease answer the current user message directly.
-                    """.formatted(currentQuestion, responseLanguage.description, focusBlock);
+                    """.formatted(currentQuestion, responseLanguage.description, summaryBlock);
         }
 
         String conversationTranscript = recentTurns.stream()
@@ -257,16 +259,7 @@ public class KnowledgeAnswerService {
                 Please answer the current user message using the recent conversation when relevant.
                 Use the conversation background for facts and references, not as a style or language example.
                 If the current message is still unclear, ask a concise clarifying question.
-                """.formatted(currentQuestion, responseLanguage.description, focusBlock, conversationTranscript);
-    }
-
-    private List<ConversationTurn> selectPromptTurns(List<ConversationTurn> recentTurns) {
-        if (recentTurns == null || recentTurns.isEmpty()) {
-            return List.of();
-        }
-
-        int fromIndex = Math.max(recentTurns.size() - 2, 0);
-        return List.copyOf(recentTurns.subList(fromIndex, recentTurns.size()));
+                """.formatted(currentQuestion, responseLanguage.description, summaryBlock, conversationTranscript);
     }
 
     private boolean isLikelyAmbiguousFollowUp(String text) {
@@ -295,9 +288,10 @@ public class KnowledgeAnswerService {
 
         String compactChinese = value.replaceAll("\\s+", "");
         String[] chinesePatterns = {
-                "^(他|她|它|他们|她们|它们)(呢|吗|是谁|是什么)?$",
-                "^(这个|那个|这件事|那件事)(呢|吗|是什么)?$",
-                "^(那他|那她|那它|这个人|那个人)(呢|吗|是谁)?$"
+                "^(他|她|它|他们|她们|它们)(呢|呀|啊)?$",
+                "^(这个|那个|这件事|那件事)(呢|呀|啊)?$",
+                "^(他|她|它|这个|那个)是谁.*$",
+                "^(他|她|它|这个|那个)是什么.*$"
         };
         for (String pattern : chinesePatterns) {
             if (compactChinese.matches(pattern)) {
@@ -311,7 +305,7 @@ public class KnowledgeAnswerService {
     private String buildClarifyingQuestion(String text) {
         String value = Objects.toString(text, "");
         if (containsChinese(value)) {
-            return "\u6211\u9700\u8981\u4e00\u70b9\u4e0a\u4e0b\u6587\uff0c\u4f60\u6307\u7684\u662f\u8c01\u6216\u54ea\u4ef6\u4e8b\uff1f";
+            return "我需要一点上下文，你指的是谁或哪件事？";
         }
         return "I need a bit more context - who or what are you referring to?";
     }
@@ -338,13 +332,13 @@ public class KnowledgeAnswerService {
         String lower = Objects.toString(text, "").trim().toLowerCase(Locale.ROOT);
 
         if (containsAny(lower,
-                "\u7528\u4e2d\u6587", "\u8bf4\u4e2d\u6587", "\u4e2d\u6587\u56de\u7b54", "\u4e2d\u6587\u56de\u590d",
+                "用中文", "说中文", "中文回答", "中文回复",
                 "answer in chinese", "reply in chinese", "respond in chinese", "speak chinese")) {
             return ResponseLanguage.CHINESE;
         }
 
         if (containsAny(lower,
-                "\u7528\u82f1\u6587", "\u8bf4\u82f1\u6587", "\u82f1\u6587\u56de\u7b54", "\u82f1\u6587\u56de\u590d",
+                "用英文", "说英文", "英文回答", "英文回复",
                 "answer in english", "reply in english", "respond in english", "speak english")) {
             return ResponseLanguage.ENGLISH;
         }
@@ -365,27 +359,27 @@ public class KnowledgeAnswerService {
             return false;
         }
 
-        return switch (normalized) {
-            case "中文", "用中文", "请用中文", "中文回答", "用中文回答", "请用中文回答",
-                    "中文回复", "用中文回复", "请用中文回复",
-                    "英文", "用英文", "请用英文", "英文回答", "用英文回答", "请用英文回答",
-                    "英文回复", "用英文回复", "请用英文回复" -> true;
-            default -> false;
-        };
+        return equalsAny(normalized,
+                "中文", "用中文", "请用中文", "中文回答", "用中文回答", "请用中文回答", "中文回复", "用中文回复", "请用中文回复",
+                "英文", "用英文", "请用英文", "英文回答", "用英文回答", "请用英文回答", "英文回复", "用英文回复", "请用英文回复",
+                "chinese", "answerinchinese", "replyinchinese", "respondinchinese",
+                "english", "answerinenglish", "replyinenglish", "respondinenglish"
+        );
     }
 
     private String normalizeLanguageSwitchMessage(String text) {
-        String normalized = Objects.toString(text, "")
+        return Objects.toString(text, "")
                 .trim()
+                .toLowerCase(Locale.ROOT)
                 .replaceAll("\\s+", "")
                 .replace("。", "")
+                .replace("，", "")
                 .replace("！", "")
                 .replace("？", "")
                 .replace(".", "")
+                .replace(",", "")
                 .replace("!", "")
-                .replace("?", "")
-                .toLowerCase(Locale.ROOT);
-        return normalized;
+                .replace("?", "");
     }
 
     private boolean shouldUseConversationContext(
@@ -421,7 +415,7 @@ public class KnowledgeAnswerService {
         }
 
         if (responseLanguage == ResponseLanguage.CHINESE || containsChinese(currentQuestion)) {
-            return "抱歉，我刚刚没有正确处理这条消息。请直接重新发一次问题，我会只回复答案。";
+            return "抱歉，我刚才没有正确处理这条消息。请直接重新发一次问题，我会只回答答案。";
         }
         return "Sorry, I didn't process that message correctly. Please send the question again and I'll answer directly.";
     }
@@ -429,17 +423,16 @@ public class KnowledgeAnswerService {
     private boolean looksLikePromptLeak(String answer) {
         String value = Objects.toString(answer, "");
         return containsAny(value,
-                "<CURRENT_USER_MESSAGE>", "<RECENT_CONVERSATION>", "<PREVIOUS_USER_MESSAGE>", "<PREVIOUS_ASSISTANT_ANSWER>",
-                "Current user message:", "Preferred reply language:", "Conversation background for reference only:",
-                "Latest user instruction:", "Requested reply language:",
-                "当前用户消息", "首选回复语言", "当前对话重点", "对话背景仅供参考", "上一条助手回答");
+                "<CURRENT_USER_MESSAGE>", "<CONVERSATION_SUMMARY>", "<RECENT_CONVERSATION>",
+                "<PREVIOUS_USER_MESSAGE>", "<PREVIOUS_ASSISTANT_ANSWER>",
+                "Current user message:", "Preferred reply language:", "Conversation summary:",
+                "Conversation background for reference only:", "Latest user instruction:", "Requested reply language:");
     }
 
     private boolean looksLikeMetaResponse(String answer) {
         String lower = Objects.toString(answer, "").toLowerCase(Locale.ROOT);
         if (containsAny(lower,
-                "the current user message is", "the user is asking", "the user is referring to",
-                "当前用户消息是在", "用户正在询问", "用户指的是")) {
+                "the current user message is", "the user is asking", "the user is referring to")) {
             return true;
         }
 
@@ -466,12 +459,35 @@ public class KnowledgeAnswerService {
     }
 
     private boolean containsAny(String text, String... fragments) {
+        String value = Objects.toString(text, "");
         for (String fragment : fragments) {
-            if (text.contains(fragment)) {
+            if (value.contains(fragment)) {
                 return true;
             }
         }
         return false;
+    }
+
+    private boolean equalsAny(String text, String... candidates) {
+        String value = Objects.toString(text, "");
+        for (String candidate : candidates) {
+            if (value.equals(candidate)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String renderConversationSummary(SessionSummary summary) {
+        String topic = Objects.toString(summary.topic(), "").trim();
+        String body = Objects.toString(summary.summary(), "").trim();
+        if (topic.isEmpty()) {
+            return body;
+        }
+        if (body.isEmpty()) {
+            return "Topic: " + topic;
+        }
+        return "Topic: " + topic + "\n" + body;
     }
 
     private ChatModel selectChatModel() {

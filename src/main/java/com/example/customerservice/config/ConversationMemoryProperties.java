@@ -6,6 +6,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public record ConversationMemoryProperties(
         boolean enabled,
         int maxTurns,
-        int maxCharsPerMessage
+        int maxCharsPerMessage,
+        int promptRecentTurns,
+        int maxSummaryChars
 ) {
 }
