@@ -9,8 +9,12 @@ import com.example.customerservice.config.AiProviderProperties;
 import com.example.customerservice.config.ConversationMemoryProperties;
 import com.example.customerservice.config.RagProperties;
 import com.example.customerservice.model.ConversationTurn;
+import com.example.customerservice.model.SessionContextWindow;
+import com.example.customerservice.model.SessionSummary;
 import java.lang.reflect.Method;
+import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
@@ -144,6 +148,32 @@ class KnowledgeAnswerServiceTextPolicyTest {
 
         assertTrue(prompt.contains("<CONVERSATION_SUMMARY>"));
         assertTrue(prompt.contains("<RECENT_CONVERSATION>"));
+    }
+
+    @Test
+    void retainedConversationContextIsDetected() throws Exception {
+        SessionContextWindow contextWindow = new SessionContextWindow(
+                "session-1",
+                List.of(),
+                List.of(new ConversationTurn("who is kobe?", "Kobe Bryant was a basketball player.")),
+                List.of(new ConversationTurn("who is kobe?", "Kobe Bryant was a basketball player.")),
+                Optional.of(new ConversationTurn("who is kobe?", "Kobe Bryant was a basketball player.")),
+                Optional.of(new SessionSummary(
+                        "session-1",
+                        1,
+                        "kobe",
+                        "- User asked: who is kobe?",
+                        Instant.now()
+                ))
+        );
+
+        boolean retained = (boolean) invoke(
+                "hasRetainedConversationContext",
+                new Class<?>[]{SessionContextWindow.class},
+                contextWindow
+        );
+
+        assertTrue(retained);
     }
 
     private Object invoke(String methodName, Class<?>[] parameterTypes, Object... args) throws Exception {

@@ -15,6 +15,8 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.deepseek.DeepSeekChatModel;
@@ -28,6 +30,8 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class KnowledgeAnswerService {
+
+    private static final Logger logger = LoggerFactory.getLogger(KnowledgeAnswerService.class);
 
     private final AiProviderProperties aiProviderProperties;
     private final RagProperties ragProperties;
@@ -62,7 +66,9 @@ public class KnowledgeAnswerService {
         ResponseLanguage responseLanguage = determineResponseLanguage(currentQuestion);
         boolean languageSwitchFollowUp = isLanguageSwitchFollowUp(currentQuestion, latestTurn);
         boolean ambiguousFollowUp = isLikelyAmbiguousFollowUp(currentQuestion);
-        boolean useConversationContext = shouldUseConversationContext(currentQuestion, languageSwitchFollowUp, ambiguousFollowUp);
+        boolean hasRetainedConversationContext = hasRetainedConversationContext(contextWindow);
+        boolean useConversationContext = hasRetainedConversationContext
+                || shouldUseConversationContext(currentQuestion, languageSwitchFollowUp, ambiguousFollowUp);
         List<ConversationTurn> promptTurns = useConversationContext ? contextWindow.promptTurns() : List.of();
         String conversationSummary = useConversationContext
                 ? contextWindow.summary().map(this::renderConversationSummary).orElse("")
@@ -74,22 +80,44 @@ public class KnowledgeAnswerService {
 
         ChatModel selectedModel = selectChatModel();
         RetrievedKnowledge retrievedKnowledge = retrieveKnowledgeIfEnabled(currentQuestion);
+        String userPrompt = buildUserPrompt(
+                currentQuestion,
+                promptTurns,
+                conversationSummary,
+                responseLanguage,
+                languageSwitchFollowUp,
+                ambiguousFollowUp,
+                latestTurn.orElse(null)
+        );
+
+        logPromptDecision(
+                message,
+                currentQuestion,
+                responseLanguage,
+                languageSwitchFollowUp,
+                ambiguousFollowUp,
+                hasRetainedConversationContext,
+                useConversationContext,
+                contextWindow,
+                userPrompt
+        );
 
         ChatClient chatClient = ChatClient.builder(selectedModel).build();
         String rawAnswer = chatClient.prompt()
                 .system(buildSystemPrompt(retrievedKnowledge.knowledgeText(), responseLanguage, languageSwitchFollowUp))
-                .user(buildUserPrompt(
-                        currentQuestion,
-                        promptTurns,
-                        conversationSummary,
-                        responseLanguage,
-                        languageSwitchFollowUp,
-                        ambiguousFollowUp,
-                        latestTurn.orElse(null)
-                ))
+                .user(userPrompt)
                 .call()
                 .content();
         String answer = sanitizeModelAnswer(rawAnswer, responseLanguage, currentQuestion);
+
+        if (logger.isDebugEnabled()) {
+            logger.debug(
+                    "answer.generated sessionId={} rawAnswerPreview={} sanitizedAnswerPreview={}",
+                    message.sessionId(),
+                    abbreviate(rawAnswer, 240),
+                    abbreviate(answer, 240)
+            );
+        }
 
         conversationMemoryService.appendExchange(message.sessionId(), currentQuestion, answer);
 
@@ -468,6 +496,10 @@ public class KnowledgeAnswerService {
         return false;
     }
 
+    private boolean hasRetainedConversationContext(SessionContextWindow contextWindow) {
+        return contextWindow.latestTurn().isPresent() || contextWindow.summary().isPresent();
+    }
+
     private boolean equalsAny(String text, String... candidates) {
         String value = Objects.toString(text, "");
         for (String candidate : candidates) {
@@ -488,6 +520,47 @@ public class KnowledgeAnswerService {
             return "Topic: " + topic;
         }
         return "Topic: " + topic + "\n" + body;
+    }
+
+    private void logPromptDecision(
+            CustomerMessage message,
+            String currentQuestion,
+            ResponseLanguage responseLanguage,
+            boolean languageSwitchFollowUp,
+            boolean ambiguousFollowUp,
+            boolean hasRetainedConversationContext,
+            boolean useConversationContext,
+            SessionContextWindow contextWindow,
+            String userPrompt
+    ) {
+        if (!logger.isDebugEnabled()) {
+            return;
+        }
+
+        logger.debug(
+                "answer.context sessionId={} userId={} question={} language={} languageSwitchFollowUp={} ambiguousFollowUp={} hasRetainedConversationContext={} useConversationContext={} latestTurnPresent={} summaryPresent={} promptTurns={} recentTurns={} promptPreview={}",
+                message.sessionId(),
+                message.userId(),
+                abbreviate(currentQuestion, 160),
+                responseLanguage,
+                languageSwitchFollowUp,
+                ambiguousFollowUp,
+                hasRetainedConversationContext,
+                useConversationContext,
+                contextWindow.latestTurn().isPresent(),
+                contextWindow.summary().isPresent(),
+                contextWindow.promptTurns().size(),
+                contextWindow.recentTurns().size(),
+                abbreviate(userPrompt, 400)
+        );
+    }
+
+    private String abbreviate(String text, int maxChars) {
+        String value = Objects.toString(text, "").replaceAll("\\s+", " ").trim();
+        if (value.length() <= maxChars) {
+            return value;
+        }
+        return value.substring(0, Math.max(maxChars - 3, 1)) + "...";
     }
 
     private ChatModel selectChatModel() {

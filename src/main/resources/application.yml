@@ -44,6 +44,10 @@ management:
       exposure:
         include: health,info,metrics,prometheus
 
+logging:
+  level:
+    com.example.customerservice.service.KnowledgeAnswerService: ${APP_KNOWLEDGE_ANSWER_LOG_LEVEL:INFO}
+
 app:
   console:
     enabled: ${APP_CONSOLE_ENABLED:false}
