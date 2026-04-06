@@ -5,8 +5,11 @@ This project now supports a basic real Feishu message loop:
 1. Receive Feishu event callback
 2. Validate the configured verification token
 3. Parse `im.message.receive_v1` text messages
-4. Call `KnowledgeAnswerService`
-5. Reply to the original Feishu message through the Feishu Open API
+4. Ignore group messages without an explicit `@` mention
+5. Deduplicate repeated deliveries in a short time window
+6. Build a conversation-oriented `sessionId`
+7. Call `KnowledgeAnswerService`
+8. Reply to the original Feishu message through the Feishu Open API
 
 ## Current scope
 
@@ -15,6 +18,10 @@ Supported in this version:
 - `url_verification`
 - `im.message.receive_v1`
 - `text` message parsing
+- `p2p` direct chat auto reply
+- group message reply only when the bot is explicitly mentioned
+- basic `@name` / mention metadata sanitization
+- in-memory duplicate delivery suppression
 - reply to the original message through `/im/v1/messages/{message_id}/reply`
 
 Not yet included in this version:
