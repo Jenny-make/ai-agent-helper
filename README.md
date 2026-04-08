@@ -33,6 +33,7 @@
 - `docs/FEASIBILITY_ASSESSMENT.md` 可行性评估
 - `docs/CONSOLE_QA.md` 控制台联调说明
 - `docs/FEISHU_WEBHOOK.md` 飞书接入说明
+- `docs/FEISHU_KNOWLEDGE_SYNC.md` 飞书文档同步入库说明
 
 ## 当前状态
 
@@ -45,6 +46,7 @@
 - 飞书基础文本消息收发闭环
 - 会话记忆、追问消歧、语言切换修复
 - RAG 读取侧接入点
+- 飞书 `docx / folder -> chunk -> Milvus` 的第一版同步链路
 
 尚未完成：
 

@@ -69,6 +69,14 @@ app:
     base-url: ${APP_FEISHU_BASE_URL:https://open.feishu.cn/open-apis}
     verification-token: ${APP_FEISHU_VERIFICATION_TOKEN:}
     encrypt-key: ${APP_FEISHU_ENCRYPT_KEY:}
+    knowledge:
+      enabled: ${APP_FEISHU_KNOWLEDGE_ENABLED:false}
+      auto-sync-on-startup: ${APP_FEISHU_KNOWLEDGE_AUTO_SYNC_ON_STARTUP:false}
+      chunk-size: ${APP_FEISHU_KNOWLEDGE_CHUNK_SIZE:700}
+      chunk-overlap: ${APP_FEISHU_KNOWLEDGE_CHUNK_OVERLAP:120}
+      max-chunks-per-document: ${APP_FEISHU_KNOWLEDGE_MAX_CHUNKS_PER_DOCUMENT:200}
+      state-file: ${APP_FEISHU_KNOWLEDGE_STATE_FILE:build/feishu-knowledge/sync-state.json}
+      sources: []
     bot:
       app-id: ${APP_FEISHU_BOT_APP_ID:}
       app-secret: ${APP_FEISHU_BOT_APP_SECRET:}

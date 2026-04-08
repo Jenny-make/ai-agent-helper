@@ -29,6 +29,12 @@
   - 语言切换重写
   - prompt 泄漏 / 元响应兜底清洗
 - 增加可选 RAG 检索入口与配置项
+- 增加飞书知识同步第一版：
+  - 支持按 `docx` token 拉取飞书文档纯文本
+  - 支持按飞书文件夹链接自动发现并递归展开其中的 `docx`
+  - 本地切片后写入 Milvus / VectorStore
+  - 本地状态文件记录上次 chunk ids，便于重复同步时先删后写
+  - 管理接口支持手动触发同步
 - 增加飞书基础消息闭环：
   - `url_verification`
   - `im.message.receive_v1` 文本消息解析
