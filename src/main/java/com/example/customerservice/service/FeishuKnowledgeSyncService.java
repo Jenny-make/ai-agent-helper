@@ -25,6 +25,7 @@ import org.springframework.stereotype.Service;
 public class FeishuKnowledgeSyncService {
 
     private static final Logger logger = LoggerFactory.getLogger(FeishuKnowledgeSyncService.class);
+    private static final int MAX_VECTOR_DOC_ID_LENGTH = 32;
 
     private final FeishuKnowledgeProperties feishuKnowledgeProperties;
     private final RagProperties ragProperties;
@@ -181,8 +182,9 @@ public class FeishuKnowledgeSyncService {
     }
 
     private String buildDocumentId(FeishuKnowledgeSource source, int chunkIndex, String content) {
-        String fingerprint = sha256Hex(source.sourceKey() + "|" + content);
-        return source.sourceKey().replace(':', '-') + "-chunk-" + chunkIndex + "-" + fingerprint.substring(0, 12);
+        // Keep Milvus document ids short and deterministic to fit common VarChar limits.
+        String fingerprint = sha256Hex(source.sourceKey() + "|" + chunkIndex + "|" + content);
+        return fingerprint.substring(0, MAX_VECTOR_DOC_ID_LENGTH);
     }
 
     private String sha256Hex(String value) {
