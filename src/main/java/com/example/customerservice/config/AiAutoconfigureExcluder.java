@@ -33,6 +33,7 @@ public class AiAutoconfigureExcluder implements EnvironmentPostProcessor, Ordere
         String openAiKey = sanitizeApiKey(environment.getProperty("spring.ai.openai.api-key", ""));
 
         boolean ragEnabled = Boolean.parseBoolean(environment.getProperty("app.rag.enabled", "false"));
+        boolean datasourceConfigured = StringUtils.hasText(environment.getProperty("spring.datasource.url", ""));
 
         String provider = inferProvider(configuredProvider, deepSeekKey, miniMaxKey, openAiKey);
 
@@ -41,6 +42,13 @@ public class AiAutoconfigureExcluder implements EnvironmentPostProcessor, Ordere
         // Vector store: only enable when RAG is explicitly enabled.
         if (!ragEnabled) {
             excludes.add("org.springframework.ai.vectorstore.milvus.autoconfigure.MilvusVectorStoreAutoConfiguration");
+        }
+
+        // Database-backed memory is optional. Keep local starts working when no datasource is configured.
+        if (!datasourceConfigured) {
+            excludes.add("org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration");
+            excludes.add("org.springframework.boot.autoconfigure.jdbc.JdbcTemplateAutoConfiguration");
+            excludes.add("org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration");
         }
 
         // Exclude model auto-configurations that would fail due to missing keys.
