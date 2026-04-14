@@ -24,10 +24,13 @@ import org.springframework.stereotype.Service;
 public class FeishuWebhookService {
 
     private static final Duration DELIVERY_DEDUP_TTL = Duration.ofMinutes(10);
+    private static final String NEW_SESSION_COMMAND = "/new";
+    private static final String NEW_SESSION_REPLY = "已创建新会话，我会从这里重新开始。";
 
     private final FeishuProperties feishuProperties;
     private final KnowledgeAnswerService knowledgeAnswerService;
     private final FeishuMessageService feishuMessageService;
+    private final ConversationMemoryService conversationMemoryService;
     private final ObjectMapper objectMapper;
     private final ConcurrentMap<String, Instant> processedDeliveries = new ConcurrentHashMap<>();
 
@@ -35,11 +38,13 @@ public class FeishuWebhookService {
             FeishuProperties feishuProperties,
             KnowledgeAnswerService knowledgeAnswerService,
             FeishuMessageService feishuMessageService,
+            ConversationMemoryService conversationMemoryService,
             ObjectMapper objectMapper
     ) {
         this.feishuProperties = feishuProperties;
         this.knowledgeAnswerService = knowledgeAnswerService;
         this.feishuMessageService = feishuMessageService;
+        this.conversationMemoryService = conversationMemoryService;
         this.objectMapper = objectMapper;
     }
 
@@ -84,9 +89,19 @@ public class FeishuWebhookService {
             return Optional.empty();
         }
 
+        if (isNewSessionCommand(customerMessage.text())) {
+            conversationMemoryService.clearSession(customerMessage.sessionId());
+            feishuMessageService.replyText(request.event().message().messageId(), NEW_SESSION_REPLY);
+            return Optional.of(new ReplyResult(NEW_SESSION_REPLY, "system", List.of()));
+        }
+
         ReplyResult result = knowledgeAnswerService.answer(customerMessage);
         feishuMessageService.replyText(request.event().message().messageId(), result.answer());
         return Optional.of(result);
+    }
+
+    private boolean isNewSessionCommand(String text) {
+        return NEW_SESSION_COMMAND.equals(Objects.toString(text, "").trim());
     }
 
     private boolean isSupportedMessageEvent(FeishuWebhookRequest request) {
