@@ -28,6 +28,7 @@ dependencies {
     implementation 'org.springframework.ai:spring-ai-starter-model-minimax'
     implementation 'org.springframework.ai:spring-ai-starter-model-openai'
     implementation 'org.springframework.ai:spring-ai-starter-vector-store-milvus'
+    implementation 'com.google.protobuf:protobuf-java:3.25.5'
     annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
 
     testImplementation 'com.h2database:h2'
