@@ -15,6 +15,7 @@ public record FeishuKnowledgeSource(
     private static final Pattern DOCX_URL_PATTERN = Pattern.compile("/docx/([a-zA-Z0-9]+)");
     private static final Pattern DOC_URL_PATTERN = Pattern.compile("/docs?/([a-zA-Z0-9]+)");
     private static final Pattern FOLDER_URL_PATTERN = Pattern.compile("/folder/([a-zA-Z0-9]+)");
+    private static final Pattern WIKI_URL_PATTERN = Pattern.compile("/wiki/([a-zA-Z0-9]+)");
 
     public String normalizedToken() {
         return Objects.toString(token, "").trim();
@@ -46,6 +47,9 @@ public record FeishuKnowledgeSource(
         if (FOLDER_URL_PATTERN.matcher(path).find()) {
             return "folder";
         }
+        if (WIKI_URL_PATTERN.matcher(path).find()) {
+            return "wiki";
+        }
         if (DOC_URL_PATTERN.matcher(path).find()) {
             return "doc";
         }
@@ -64,6 +68,10 @@ public record FeishuKnowledgeSource(
             return matched;
         }
         matched = matchFirst(path, FOLDER_URL_PATTERN);
+        if (!matched.isBlank()) {
+            return matched;
+        }
+        matched = matchFirst(path, WIKI_URL_PATTERN);
         if (!matched.isBlank()) {
             return matched;
         }

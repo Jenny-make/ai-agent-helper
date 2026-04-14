@@ -29,10 +29,13 @@ public class FeishuOpenApiKnowledgeSourceClient implements FeishuKnowledgeSource
     @Override
     public FeishuKnowledgeDocument fetch(FeishuKnowledgeSource source) {
         String type = source.resolvedType();
+        if ("wiki".equals(type)) {
+            return fetchWikiBackedDocument(source);
+        }
         if (!"docx".equals(type)) {
             throw new IllegalArgumentException(
                     "Unsupported Feishu knowledge source type '" + source.resolvedType()
-                            + "'. First-pass sync currently supports only 'docx'."
+                            + "'. First-pass sync currently supports 'docx' and wiki pages backed by docx."
             );
         }
         String token = source.resolvedToken();
@@ -40,6 +43,61 @@ public class FeishuOpenApiKnowledgeSourceClient implements FeishuKnowledgeSource
             throw new IllegalArgumentException("Feishu knowledge source token is blank and could not be inferred from sourceUrl.");
         }
 
+        return fetchDocxDocument(source, token, type, buildSourceReference(source));
+    }
+
+    private FeishuKnowledgeDocument fetchWikiBackedDocument(FeishuKnowledgeSource source) {
+        String wikiToken = source.resolvedToken();
+        if (wikiToken.isBlank()) {
+            throw new IllegalArgumentException("Feishu wiki source token is blank and could not be inferred from sourceUrl.");
+        }
+
+        JsonNode response = restClient.get()
+                .uri(uriBuilder -> uriBuilder
+                        .path("/wiki/v2/spaces/get_node")
+                        .queryParam("token", wikiToken)
+                        .build())
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + feishuAuthService.getTenantAccessToken())
+                .retrieve()
+                .body(JsonNode.class);
+
+        if (response == null) {
+            throw new IllegalStateException("Empty response while reading Feishu wiki node.");
+        }
+
+        int code = response.path("code").asInt(-1);
+        if (code != 0) {
+            throw new IllegalStateException("Failed to read Feishu wiki node: " + response);
+        }
+
+        JsonNode data = response.path("data");
+        JsonNode node = data.has("node") ? data.path("node") : data;
+        String objType = firstNonBlank(node.path("obj_type").asText(""), node.path("objType").asText(""));
+        String objToken = firstNonBlank(node.path("obj_token").asText(""), node.path("objToken").asText(""));
+        if (!"docx".equals(objType)) {
+            throw new IllegalArgumentException(
+                    "Unsupported Feishu wiki node obj_type '" + objType + "'. Current sync supports wiki nodes backed by docx only."
+            );
+        }
+        if (objToken.isBlank()) {
+            throw new IllegalStateException("Feishu wiki node did not include obj_token for token '" + wikiToken + "'.");
+        }
+
+        FeishuKnowledgeSource docxSource = new FeishuKnowledgeSource(
+                objToken,
+                "docx",
+                firstNonBlank(source.normalizedTitle(), node.path("title").asText(""), wikiToken),
+                source.normalizedSourceUrl()
+        );
+        return fetchDocxDocument(docxSource, objToken, "wiki", buildSourceReference(source));
+    }
+
+    private FeishuKnowledgeDocument fetchDocxDocument(
+            FeishuKnowledgeSource source,
+            String token,
+            String documentType,
+            String sourceReference
+    ) {
         JsonNode response = restClient.get()
                 .uri("/docx/v1/documents/{document_id}/raw_content", token)
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + feishuAuthService.getTenantAccessToken())
@@ -75,9 +133,9 @@ public class FeishuOpenApiKnowledgeSourceClient implements FeishuKnowledgeSource
 
         return new FeishuKnowledgeDocument(
                 token,
-                type,
+                documentType,
                 title,
-                buildSourceReference(source),
+                sourceReference,
                 normalizeContent(rawContent)
         );
     }
