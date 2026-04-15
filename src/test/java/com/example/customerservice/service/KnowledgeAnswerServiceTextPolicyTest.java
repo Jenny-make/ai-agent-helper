@@ -8,9 +8,11 @@ import static org.mockito.Mockito.mock;
 import com.example.customerservice.config.AiProviderProperties;
 import com.example.customerservice.config.ConversationMemoryProperties;
 import com.example.customerservice.config.RagProperties;
+import com.example.customerservice.model.ActiveDocument;
 import com.example.customerservice.model.ConversationTurn;
 import com.example.customerservice.model.SessionContextWindow;
 import com.example.customerservice.model.SessionSummary;
+import com.example.customerservice.model.TaskMode;
 import java.lang.reflect.Method;
 import java.time.Instant;
 import java.util.List;
@@ -32,7 +34,9 @@ class KnowledgeAnswerServiceTextPolicyTest {
                 mock(ObjectProvider.class),
                 mock(ObjectProvider.class),
                 mock(ObjectProvider.class),
-                new ConversationMemoryService(new ConversationMemoryProperties(true, 6, 1200, 4, 1200))
+                new ConversationMemoryService(new ConversationMemoryProperties(true, 6, 1200, 4, 1200)),
+                new ActiveDocumentService((org.springframework.jdbc.core.JdbcOperations) null),
+                new TaskModeClassifier()
         );
     }
 
@@ -46,10 +50,11 @@ class KnowledgeAnswerServiceTextPolicyTest {
     void standaloneQuestionDoesNotUseConversationContext() throws Exception {
         boolean useConversationContext = (boolean) invoke(
                 "shouldUseConversationContext",
-                new Class<?>[]{String.class, boolean.class, boolean.class},
+                new Class<?>[]{String.class, boolean.class, boolean.class, TaskMode.class},
                 "who is kobe?",
                 false,
-                false
+                false,
+                TaskMode.SMALL_TALK
         );
 
         assertFalse(useConversationContext);
@@ -64,10 +69,11 @@ class KnowledgeAnswerServiceTextPolicyTest {
         );
         boolean useConversationContext = (boolean) invoke(
                 "shouldUseConversationContext",
-                new Class<?>[]{String.class, boolean.class, boolean.class},
+                new Class<?>[]{String.class, boolean.class, boolean.class, TaskMode.class},
                 "what about him?",
                 false,
-                true
+                true,
+                TaskMode.SMALL_TALK
         );
 
         assertTrue(ambiguous);
@@ -135,7 +141,9 @@ class KnowledgeAnswerServiceTextPolicyTest {
                         responseLanguageClass,
                         boolean.class,
                         boolean.class,
-                        ConversationTurn.class
+                        ConversationTurn.class,
+                        TaskMode.class,
+                        Optional.class
                 },
                 "what about the refund timeline?",
                 List.of(new ConversationTurn("I want a refund for order 12345", "Please share the order number.")),
@@ -143,11 +151,84 @@ class KnowledgeAnswerServiceTextPolicyTest {
                 auto,
                 false,
                 true,
-                new ConversationTurn("I want a refund for order 12345", "Please share the order number.")
+                new ConversationTurn("I want a refund for order 12345", "Please share the order number."),
+                TaskMode.SMALL_TALK,
+                Optional.empty()
         );
 
-        assertTrue(prompt.contains("<CONVERSATION_SUMMARY>"));
+        assertTrue(prompt.contains("<THREAD_SUMMARY>"));
+        assertTrue(prompt.contains("<THREAD_CONTEXT>"));
         assertTrue(prompt.contains("<RECENT_CONVERSATION>"));
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void documentFollowUpPromptIncludesActiveDocumentAndThreadContext() throws Exception {
+        Class<?> responseLanguageClass = Class.forName(
+                "com.example.customerservice.service.KnowledgeAnswerService$ResponseLanguage"
+        );
+        Object chinese = Enum.valueOf((Class<? extends Enum>) responseLanguageClass.asSubclass(Enum.class), "CHINESE");
+        ActiveDocument activeDocument = new ActiveDocument(
+                "session-doc",
+                "doc-token",
+                "测试论文",
+                "feishu-docx:doc-token",
+                "doc-token",
+                Instant.now()
+        );
+
+        String prompt = (String) invoke(
+                "buildUserPrompt",
+                new Class<?>[]{
+                        String.class,
+                        List.class,
+                        String.class,
+                        responseLanguageClass,
+                        boolean.class,
+                        boolean.class,
+                        ConversationTurn.class,
+                        TaskMode.class,
+                        Optional.class
+                },
+                "第二个作者是谁？",
+                List.of(new ConversationTurn("测试论文的作者是谁？", "作者是张三、李四。")),
+                "",
+                chinese,
+                false,
+                false,
+                new ConversationTurn("测试论文的作者是谁？", "作者是张三、李四。"),
+                TaskMode.FOLLOW_UP_ON_DOCUMENT,
+                Optional.of(activeDocument)
+        );
+
+        assertTrue(prompt.contains("<TASK_MODE>"));
+        assertTrue(prompt.contains("FOLLOW_UP_ON_DOCUMENT"));
+        assertTrue(prompt.contains("<ACTIVE_DOCUMENT>"));
+        assertTrue(prompt.contains("sourceToken=doc-token"));
+        assertTrue(prompt.contains("<THREAD_CONTEXT>"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void documentFollowUpBuildsSourceTokenFilter() throws Exception {
+        ActiveDocument activeDocument = new ActiveDocument(
+                "session-doc",
+                "doc-token",
+                "测试论文",
+                "feishu-docx:doc-token",
+                "doc-token",
+                Instant.now()
+        );
+
+        Optional<String> filter = (Optional<String>) invoke(
+                "buildActiveDocumentFilter",
+                new Class<?>[]{Optional.class, TaskMode.class},
+                Optional.of(activeDocument),
+                TaskMode.FOLLOW_UP_ON_DOCUMENT
+        );
+
+        assertTrue(filter.isPresent());
+        assertEquals("sourceToken == 'doc-token'", filter.orElseThrow());
     }
 
     @Test

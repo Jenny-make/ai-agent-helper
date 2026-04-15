@@ -73,6 +73,7 @@ class FeishuKnowledgeSyncServiceTest {
         List<Document> stored = captor.getValue();
         assertFalse(stored.isEmpty());
         assertTrue(stored.stream().allMatch(document -> document.getId().length() <= 32));
+        assertEquals("docx:abc123", stored.get(0).getMetadata().get("documentId"));
         assertEquals("Refund Policy", stored.get(0).getMetadata().get("title"));
         assertEquals("https://example.feishu.cn/docx/abc123", stored.get(0).getMetadata().get("source"));
         assertEquals("abc123", stored.get(0).getMetadata().get("sourceToken"));

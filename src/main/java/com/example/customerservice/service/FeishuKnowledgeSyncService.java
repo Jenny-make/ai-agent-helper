@@ -171,6 +171,7 @@ public class FeishuKnowledgeSyncService {
             int totalChunks
     ) {
         Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("documentId", source.sourceKey());
         metadata.put("source", document.sourceReference());
         metadata.put("title", document.title());
         metadata.put("sourceType", "feishu-" + source.resolvedType());

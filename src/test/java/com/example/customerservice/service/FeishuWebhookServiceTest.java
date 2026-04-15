@@ -29,6 +29,7 @@ class FeishuWebhookServiceTest {
                 knowledgeAnswerService,
                 feishuMessageService,
                 mock(ConversationMemoryService.class),
+                mock(ActiveDocumentService.class),
                 new ObjectMapper()
         );
 
@@ -48,6 +49,7 @@ class FeishuWebhookServiceTest {
                 knowledgeAnswerService,
                 feishuMessageService,
                 mock(ConversationMemoryService.class),
+                mock(ActiveDocumentService.class),
                 new ObjectMapper()
         );
         when(knowledgeAnswerService.answer(any())).thenReturn(new ReplyResult("Hello there", "test", List.of()));
@@ -73,6 +75,7 @@ class FeishuWebhookServiceTest {
                 knowledgeAnswerService,
                 feishuMessageService,
                 mock(ConversationMemoryService.class),
+                mock(ActiveDocumentService.class),
                 new ObjectMapper()
         );
         when(knowledgeAnswerService.answer(any())).thenReturn(new ReplyResult("Java GC answer", "test", List.of()));
@@ -98,6 +101,7 @@ class FeishuWebhookServiceTest {
                 knowledgeAnswerService,
                 feishuMessageService,
                 mock(ConversationMemoryService.class),
+                mock(ActiveDocumentService.class),
                 new ObjectMapper()
         );
         when(knowledgeAnswerService.answer(any())).thenReturn(new ReplyResult("Hi", "test", List.of()));
@@ -115,11 +119,13 @@ class FeishuWebhookServiceTest {
         KnowledgeAnswerService knowledgeAnswerService = mock(KnowledgeAnswerService.class);
         FeishuMessageService feishuMessageService = mock(FeishuMessageService.class);
         ConversationMemoryService conversationMemoryService = mock(ConversationMemoryService.class);
+        ActiveDocumentService activeDocumentService = mock(ActiveDocumentService.class);
         FeishuWebhookService service = new FeishuWebhookService(
                 new FeishuProperties("https://open.feishu.cn/open-apis", "", "", null),
                 knowledgeAnswerService,
                 feishuMessageService,
                 conversationMemoryService,
+                activeDocumentService,
                 new ObjectMapper()
         );
 
@@ -128,6 +134,7 @@ class FeishuWebhookServiceTest {
         assertTrue(result.isPresent());
         assertEquals("已创建新会话，我会从这里重新开始。", result.orElseThrow().answer());
         verify(conversationMemoryService).clearSession("feishu-chat-chat-4-user-user-4");
+        verify(activeDocumentService).clearActiveDocument("feishu-chat-chat-4-user-user-4");
         verify(knowledgeAnswerService, never()).answer(any());
         verify(feishuMessageService).replyText("msg-4", "已创建新会话，我会从这里重新开始。");
     }
@@ -142,6 +149,7 @@ class FeishuWebhookServiceTest {
                 knowledgeAnswerService,
                 feishuMessageService,
                 conversationMemoryService,
+                mock(ActiveDocumentService.class),
                 new ObjectMapper()
         );
         when(knowledgeAnswerService.answer(any())).thenReturn(new ReplyResult("normal answer", "test", List.of()));

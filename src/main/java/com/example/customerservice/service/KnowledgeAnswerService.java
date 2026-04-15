@@ -2,11 +2,13 @@ package com.example.customerservice.service;
 
 import com.example.customerservice.config.AiProviderProperties;
 import com.example.customerservice.config.RagProperties;
+import com.example.customerservice.model.ActiveDocument;
 import com.example.customerservice.model.ConversationTurn;
 import com.example.customerservice.model.CustomerMessage;
 import com.example.customerservice.model.ReplyResult;
 import com.example.customerservice.model.SessionContextWindow;
 import com.example.customerservice.model.SessionSummary;
+import com.example.customerservice.model.TaskMode;
 import java.time.LocalDate;
 import java.time.format.TextStyle;
 import java.util.ArrayList;
@@ -49,6 +51,8 @@ public class KnowledgeAnswerService {
     private final ObjectProvider<MiniMaxChatModel> miniMaxChatModelProvider;
     private final ObjectProvider<VectorStore> vectorStoreProvider;
     private final ConversationMemoryService conversationMemoryService;
+    private final ActiveDocumentService activeDocumentService;
+    private final TaskModeClassifier taskModeClassifier;
 
     public KnowledgeAnswerService(
             AiProviderProperties aiProviderProperties,
@@ -57,7 +61,9 @@ public class KnowledgeAnswerService {
             ObjectProvider<OpenAiChatModel> openAiChatModelProvider,
             ObjectProvider<MiniMaxChatModel> miniMaxChatModelProvider,
             ObjectProvider<VectorStore> vectorStoreProvider,
-            ConversationMemoryService conversationMemoryService
+            ConversationMemoryService conversationMemoryService,
+            ActiveDocumentService activeDocumentService,
+            TaskModeClassifier taskModeClassifier
     ) {
         this.aiProviderProperties = aiProviderProperties;
         this.ragProperties = ragProperties;
@@ -66,18 +72,26 @@ public class KnowledgeAnswerService {
         this.miniMaxChatModelProvider = miniMaxChatModelProvider;
         this.vectorStoreProvider = vectorStoreProvider;
         this.conversationMemoryService = conversationMemoryService;
+        this.activeDocumentService = activeDocumentService;
+        this.taskModeClassifier = taskModeClassifier;
     }
 
     public ReplyResult answer(CustomerMessage message) {
         String currentQuestion = Objects.toString(message.text(), "").trim();
         SessionContextWindow contextWindow = conversationMemoryService.getContextWindow(message.sessionId());
+        Optional<ActiveDocument> activeDocument = activeDocumentService.getActiveDocument(message.sessionId());
+        TaskMode taskMode = taskModeClassifier.classify(currentQuestion, activeDocument);
         Optional<ConversationTurn> latestTurn = contextWindow.latestTurn();
         ResponseLanguage responseLanguage = determineResponseLanguage(currentQuestion);
         boolean languageSwitchFollowUp = isLanguageSwitchFollowUp(currentQuestion, latestTurn);
         boolean ambiguousFollowUp = isLikelyAmbiguousFollowUp(currentQuestion);
         boolean hasRetainedConversationContext = hasRetainedConversationContext(contextWindow);
-        boolean useConversationContext = hasRetainedConversationContext
-                || shouldUseConversationContext(currentQuestion, languageSwitchFollowUp, ambiguousFollowUp);
+        boolean useConversationContext = shouldUseConversationContext(
+                currentQuestion,
+                languageSwitchFollowUp,
+                ambiguousFollowUp,
+                taskMode
+        );
         List<ConversationTurn> promptTurns = useConversationContext ? contextWindow.promptTurns() : List.of();
         String conversationSummary = useConversationContext
                 ? contextWindow.summary().map(this::renderConversationSummary).orElse("")
@@ -99,7 +113,13 @@ public class KnowledgeAnswerService {
         }
 
         ChatModel selectedModel = selectChatModel();
-        RetrievedKnowledge retrievedKnowledge = retrieveKnowledgeIfEnabled(currentQuestion);
+        RetrievedKnowledge retrievedKnowledge = retrieveKnowledgeIfEnabled(
+                message.sessionId(),
+                currentQuestion,
+                activeDocument,
+                taskMode
+        );
+        retrievedKnowledge.activeDocument().ifPresent(activeDocumentService::updateActiveDocument);
         String userPrompt = buildUserPrompt(
                 currentQuestion,
                 promptTurns,
@@ -107,7 +127,9 @@ public class KnowledgeAnswerService {
                 responseLanguage,
                 languageSwitchFollowUp,
                 ambiguousFollowUp,
-                latestTurn.orElse(null)
+                latestTurn.orElse(null),
+                taskMode,
+                activeDocument
         );
 
         logPromptDecision(
@@ -118,13 +140,21 @@ public class KnowledgeAnswerService {
                 ambiguousFollowUp,
                 hasRetainedConversationContext,
                 useConversationContext,
+                taskMode,
+                activeDocument,
                 contextWindow,
                 userPrompt
         );
 
         ChatClient chatClient = ChatClient.builder(selectedModel).build();
         String rawAnswer = chatClient.prompt()
-                .system(buildSystemPrompt(retrievedKnowledge.knowledgeText(), responseLanguage, languageSwitchFollowUp))
+                .system(buildSystemPrompt(
+                        retrievedKnowledge.knowledgeText(),
+                        responseLanguage,
+                        languageSwitchFollowUp,
+                        taskMode,
+                        activeDocument.or(retrievedKnowledge::activeDocument)
+                ))
                 .user(userPrompt)
                 .call()
                 .content();
@@ -152,13 +182,50 @@ public class KnowledgeAnswerService {
         return vectorStoreProvider.getIfAvailable() != null;
     }
 
-    private String buildSystemPrompt(String knowledge, ResponseLanguage responseLanguage, boolean languageSwitchFollowUp) {
+    private String buildSystemPrompt(
+            String knowledge,
+            ResponseLanguage responseLanguage,
+            boolean languageSwitchFollowUp,
+            TaskMode taskMode,
+            Optional<ActiveDocument> activeDocument
+    ) {
         boolean hasKnowledge = knowledge != null && !knowledge.isBlank();
+        boolean documentGrounded = taskMode == TaskMode.DOCUMENT_QA
+                || taskMode == TaskMode.FOLLOW_UP_ON_DOCUMENT
+                || taskMode == TaskMode.DEBUG_RAG;
         String base = Objects.toString(aiProviderProperties.systemPrompt(), "").trim();
         StringBuilder sb = new StringBuilder();
         if (!base.isEmpty()) {
             sb.append(base).append("\n\n");
         }
+        sb.append("""
+                <SYSTEM_PRIORITY>
+                1. KNOWLEDGE_EVIDENCE is the highest-priority source for document facts.
+                2. THREAD_CONTEXT may only be used to resolve references such as "this document", "that paragraph", or "the second author".
+                3. THREAD_CONTEXT must not override KNOWLEDGE_EVIDENCE.
+                4. If KNOWLEDGE_EVIDENCE is insufficient for document facts, say you are not sure based on the retrieved content.
+                5. Do not invent names, titles, authors, policy clauses, or citations.
+                </SYSTEM_PRIORITY>
+
+                <TASK_MODE>
+                %s
+                </TASK_MODE>
+
+                """.formatted(taskMode == null ? TaskMode.SMALL_TALK : taskMode));
+        activeDocument.ifPresent(document -> sb.append("""
+                <ACTIVE_DOCUMENT>
+                documentId=%s
+                title=%s
+                source=%s
+                sourceToken=%s
+                </ACTIVE_DOCUMENT>
+
+                """.formatted(
+                document.documentId(),
+                document.title(),
+                document.source(),
+                document.sourceToken()
+        )));
         sb.append("You are a customer support assistant.\n")
                 .append("Answer the user's question clearly and concisely.\n")
                 .append("Current date for this turn: ").append(currentDateContext()).append(".\n")
@@ -181,11 +248,18 @@ public class KnowledgeAnswerService {
         }
         if (hasKnowledge) {
             sb.append("\n")
-                    .append("Use the following retrieved context as the primary source of truth.\n")
-                    .append("If it is insufficient, you may use general knowledge and clearly label assumptions.\n")
-                    .append("<CONTEXT>\n")
+                    .append("Use KNOWLEDGE_EVIDENCE as the primary source of truth for document facts.\n")
+                    .append("If it is insufficient, say you are not sure based on the retrieved content.\n")
+                    .append("<KNOWLEDGE_EVIDENCE>\n")
                     .append(knowledge)
-                    .append("\n</CONTEXT>\n");
+                    .append("\n</KNOWLEDGE_EVIDENCE>\n");
+        } else if (documentGrounded) {
+            sb.append("\n")
+                    .append("No KNOWLEDGE_EVIDENCE is available for this document-grounded task.\n")
+                    .append("Do not use general knowledge to fill missing document facts; say you are not sure based on the retrieved content.\n")
+                    .append("<KNOWLEDGE_EVIDENCE>\n")
+                    .append("(empty)\n")
+                    .append("</KNOWLEDGE_EVIDENCE>\n");
         } else {
             sb.append("\n")
                     .append("No retrieved context is available. Answer using general knowledge.\n")
@@ -201,19 +275,40 @@ public class KnowledgeAnswerService {
             ResponseLanguage responseLanguage,
             boolean languageSwitchFollowUp,
             boolean ambiguousFollowUp,
-            ConversationTurn latestTurn
+            ConversationTurn latestTurn,
+            TaskMode taskMode,
+            Optional<ActiveDocument> activeDocument
     ) {
         String summaryBlock = conversationSummary == null || conversationSummary.isBlank()
                 ? ""
                 : """
-                Conversation summary:
-                <CONVERSATION_SUMMARY>
+                <THREAD_SUMMARY>
                 %s
-                </CONVERSATION_SUMMARY>
+                </THREAD_SUMMARY>
 
                 """.formatted(conversationSummary);
+        String activeDocumentBlock = activeDocument == null || activeDocument.isEmpty()
+                ? ""
+                : """
+                <ACTIVE_DOCUMENT>
+                documentId=%s
+                title=%s
+                source=%s
+                sourceToken=%s
+                </ACTIVE_DOCUMENT>
+
+                """.formatted(
+                activeDocument.orElseThrow().documentId(),
+                activeDocument.orElseThrow().title(),
+                activeDocument.orElseThrow().source(),
+                activeDocument.orElseThrow().sourceToken()
+        );
         if (languageSwitchFollowUp && latestTurn != null) {
             return """
+                    <TASK_MODE>
+                    %s
+                    </TASK_MODE>
+
                     Latest user instruction:
                     <CURRENT_USER_MESSAGE>
                     %s
@@ -236,6 +331,7 @@ public class KnowledgeAnswerService {
                     Return only the rewritten answer.
                     Do not keep the original language if it conflicts with the requested reply language.
                     """.formatted(
+                    taskMode,
                     currentQuestion,
                     responseLanguage.description,
                     Objects.toString(latestTurn.userMessage(), ""),
@@ -248,25 +344,16 @@ public class KnowledgeAnswerService {
                             + "\nAssistant: " + Objects.toString(turn.assistantMessage(), ""))
                     .collect(Collectors.joining("\n\n"));
             return """
-                    Current user message:
-                    <CURRENT_USER_MESSAGE>
+                    <TASK_MODE>
                     %s
-                    </CURRENT_USER_MESSAGE>
+                    </TASK_MODE>
 
-                    Preferred reply language:
-                    %s
-
-                    %sThis is a follow-up question that depends on recent conversation context.
-                    Resolve pronouns or references from the recent conversation first, then answer directly.
-                    If the referent is still unclear, ask one short clarifying question.
-
+                    %s%s<THREAD_CONTEXT>
                     <RECENT_CONVERSATION>
                     %s
                     </RECENT_CONVERSATION>
-                    """.formatted(currentQuestion, responseLanguage.description, summaryBlock, conversationTranscript);
-        }
-        if (recentTurns == null || recentTurns.isEmpty()) {
-            return """
+                    </THREAD_CONTEXT>
+
                     Current user message:
                     <CURRENT_USER_MESSAGE>
                     %s
@@ -275,14 +362,54 @@ public class KnowledgeAnswerService {
                     Preferred reply language:
                     %s
 
-                    %sPlease answer the current user message directly.
-                    """.formatted(currentQuestion, responseLanguage.description, summaryBlock);
+                    This is a follow-up question that depends on recent conversation context.
+                    Resolve pronouns or references from the recent conversation first, then answer directly.
+                    If the referent is still unclear, ask one short clarifying question.
+                    """.formatted(
+                    taskMode,
+                    activeDocumentBlock,
+                    summaryBlock,
+                    conversationTranscript,
+                    currentQuestion,
+                    responseLanguage.description
+            );
+        }
+        if (recentTurns == null || recentTurns.isEmpty()) {
+            return """
+                    <TASK_MODE>
+                    %s
+                    </TASK_MODE>
+
+                    %s%s<THREAD_CONTEXT>
+                    (empty)
+                    </THREAD_CONTEXT>
+
+                    Current user message:
+                    <CURRENT_USER_MESSAGE>
+                    %s
+                    </CURRENT_USER_MESSAGE>
+
+                    Preferred reply language:
+                    %s
+
+                    Please answer the current user message directly.
+                    """.formatted(taskMode, activeDocumentBlock, summaryBlock, currentQuestion, responseLanguage.description);
         }
         String conversationTranscript = recentTurns.stream()
                 .map(turn -> "User: " + Objects.toString(turn.userMessage(), "")
                         + "\nAssistant: " + Objects.toString(turn.assistantMessage(), ""))
                 .collect(Collectors.joining("\n\n"));
         return """
+                <TASK_MODE>
+                %s
+                </TASK_MODE>
+
+                %s%s<THREAD_CONTEXT>
+                <RECENT_CONVERSATION>
+                %s
+                </RECENT_CONVERSATION>
+                </THREAD_CONTEXT>
+
                 Current user message:
                 <CURRENT_USER_MESSAGE>
                 %s
@@ -291,15 +418,17 @@ public class KnowledgeAnswerService {
                 Preferred reply language:
                 %s
 
-                %sConversation background for reference only:
-                <RECENT_CONVERSATION>
-                %s
-                </RECENT_CONVERSATION>
-
                 Please answer the current user message using the recent conversation when relevant.
                 Use the conversation background for facts and references, not as a style or language example.
                 If the current message is still unclear, ask a concise clarifying question.
-                """.formatted(currentQuestion, responseLanguage.description, summaryBlock, conversationTranscript);
+                """.formatted(
+                taskMode,
+                activeDocumentBlock,
+                summaryBlock,
+                conversationTranscript,
+                currentQuestion,
+                responseLanguage.description
+        );
     }
 
     private boolean isLikelyAmbiguousFollowUp(String text) {
@@ -444,9 +573,10 @@ public class KnowledgeAnswerService {
     private boolean shouldUseConversationContext(
             String currentQuestion,
             boolean languageSwitchFollowUp,
-            boolean ambiguousFollowUp
+            boolean ambiguousFollowUp,
+            TaskMode taskMode
     ) {
-        if (languageSwitchFollowUp || ambiguousFollowUp) {
+        if (languageSwitchFollowUp || ambiguousFollowUp || taskMode == TaskMode.FOLLOW_UP_ON_DOCUMENT) {
             return true;
         }
         String normalized = normalizeIntentText(currentQuestion);
@@ -641,7 +771,8 @@ public class KnowledgeAnswerService {
     private boolean looksLikePromptLeak(String answer) {
         String value = Objects.toString(answer, "");
         return containsAny(value,
-                "<CURRENT_USER_MESSAGE>", "<CONVERSATION_SUMMARY>", "<RECENT_CONVERSATION>",
+                "<CURRENT_USER_MESSAGE>", "<CONVERSATION_SUMMARY>", "<THREAD_SUMMARY>", "<THREAD_CONTEXT>",
+                "<RECENT_CONVERSATION>", "<KNOWLEDGE_EVIDENCE>", "<ACTIVE_DOCUMENT>", "<TASK_MODE>",
                 "<PREVIOUS_USER_MESSAGE>", "<PREVIOUS_ASSISTANT_ANSWER>",
                 "Current user message:", "Preferred reply language:", "Conversation summary:",
                 "Conversation background for reference only:", "Latest user instruction:", "Requested reply language:");
@@ -725,6 +856,8 @@ public class KnowledgeAnswerService {
             boolean ambiguousFollowUp,
             boolean hasRetainedConversationContext,
             boolean useConversationContext,
+            TaskMode taskMode,
+            Optional<ActiveDocument> activeDocument,
             SessionContextWindow contextWindow,
             String userPrompt
     ) {
@@ -732,10 +865,12 @@ public class KnowledgeAnswerService {
             return;
         }
         logger.debug(
-                "answer.context sessionId={} userId={} question={} language={} languageSwitchFollowUp={} ambiguousFollowUp={} hasRetainedConversationContext={} useConversationContext={} latestTurnPresent={} summaryPresent={} promptTurns={} recentTurns={} promptPreview={}",
+                "answer.context sessionId={} userId={} question={} taskMode={} activeDocument={} language={} languageSwitchFollowUp={} ambiguousFollowUp={} hasRetainedConversationContext={} useConversationContext={} latestTurnPresent={} summaryPresent={} promptTurns={} recentTurns={} promptPreview={}",
                 message.sessionId(),
                 message.userId(),
                 abbreviate(currentQuestion, 160),
+                taskMode,
+                activeDocument.map(ActiveDocument::documentId).orElse(""),
                 responseLanguage,
                 languageSwitchFollowUp,
                 ambiguousFollowUp,
@@ -800,7 +935,12 @@ public class KnowledgeAnswerService {
         return model;
     }
 
-    private RetrievedKnowledge retrieveKnowledgeIfEnabled(String query) {
+    private RetrievedKnowledge retrieveKnowledgeIfEnabled(
+            String sessionId,
+            String query,
+            Optional<ActiveDocument> activeDocument,
+            TaskMode taskMode
+    ) {
         if (!ragProperties.enabled()) {
             return RetrievedKnowledge.empty();
         }
@@ -816,6 +956,7 @@ public class KnowledgeAnswerService {
             if (ragProperties.similarityThreshold() > 0) {
                 builder = builder.similarityThreshold(ragProperties.similarityThreshold());
             }
+            buildActiveDocumentFilter(activeDocument, taskMode).ifPresent(builder::filterExpression);
             SearchRequest request = builder.build();
             documents = vectorStore.similaritySearch(request);
         } catch (Exception e) {
@@ -826,6 +967,7 @@ public class KnowledgeAnswerService {
         }
         List<String> snippets = new ArrayList<>(documents.size());
         List<String> citations = new ArrayList<>(documents.size());
+        Optional<ActiveDocument> retrievedActiveDocument = Optional.empty();
         for (Document document : documents) {
             if (document == null) {
                 continue;
@@ -837,7 +979,11 @@ public class KnowledgeAnswerService {
             if (ragProperties.maxCharsPerDoc() > 0 && content.length() > ragProperties.maxCharsPerDoc()) {
                 content = content.substring(0, ragProperties.maxCharsPerDoc()) + "...";
             }
-            snippets.add(content);
+            ActiveDocument documentFocus = toActiveDocument(sessionId, document);
+            if (retrievedActiveDocument.isEmpty() && !documentFocus.documentId().isBlank()) {
+                retrievedActiveDocument = Optional.of(documentFocus);
+            }
+            snippets.add(renderEvidenceSnippet(document, content));
             Object source = document.getMetadata() == null ? null : document.getMetadata().get("source");
             if (source != null) {
                 citations.add(String.valueOf(source));
@@ -846,13 +992,91 @@ public class KnowledgeAnswerService {
         if (snippets.isEmpty()) {
             return RetrievedKnowledge.empty();
         }
-        String knowledgeText = snippets.stream().map(s -> "###\n" + s).collect(Collectors.joining("\n"));
-        return new RetrievedKnowledge(knowledgeText, citations);
+        String knowledgeText = String.join("\n", snippets);
+        return new RetrievedKnowledge(knowledgeText, citations, retrievedActiveDocument);
     }
 
-    private record RetrievedKnowledge(String knowledgeText, List<String> citations) {
+    private Optional<String> buildActiveDocumentFilter(Optional<ActiveDocument> activeDocument, TaskMode taskMode) {
+        if (taskMode != TaskMode.FOLLOW_UP_ON_DOCUMENT || activeDocument == null || activeDocument.isEmpty()) {
+            return Optional.empty();
+        }
+        ActiveDocument document = activeDocument.orElseThrow();
+        if (!document.sourceToken().isBlank()) {
+            return Optional.of("sourceToken == '" + escapeFilterValue(document.sourceToken()) + "'");
+        }
+        if (!document.source().isBlank()) {
+            return Optional.of("source == '" + escapeFilterValue(document.source()) + "'");
+        }
+        if (!document.documentId().isBlank()) {
+            return Optional.of("documentId == '" + escapeFilterValue(document.documentId()) + "'");
+        }
+        return Optional.empty();
+    }
+
+    private String escapeFilterValue(String value) {
+        return Objects.toString(value, "").replace("\\", "\\\\").replace("'", "\\'");
+    }
+
+    private String renderEvidenceSnippet(Document document, String content) {
+        String documentId = metadataValue(document, "documentId");
+        String title = metadataValue(document, "title");
+        String source = metadataValue(document, "source");
+        String sourceToken = metadataValue(document, "sourceToken");
+        Object chunkIndex = document.getMetadata() == null ? null : document.getMetadata().get("chunkIndex");
+        return """
+                [doc=%s][title=%s][sourceToken=%s][source=%s][chunk=%s]
+                %s
+                """.formatted(
+                firstNonBlank(documentId, sourceToken, source, Objects.toString(document.getId(), "")),
+                title,
+                sourceToken,
+                source,
+                Objects.toString(chunkIndex, ""),
+                content
+        );
+    }
+
+    private ActiveDocument toActiveDocument(String sessionId, Document document) {
+        String documentId = firstNonBlank(
+                metadataValue(document, "documentId"),
+                metadataValue(document, "sourceToken"),
+                metadataValue(document, "source"),
+                Objects.toString(document == null ? "" : document.getId(), "")
+        );
+        return new ActiveDocument(
+                sessionId,
+                documentId,
+                metadataValue(document, "title"),
+                metadataValue(document, "source"),
+                metadataValue(document, "sourceToken"),
+                java.time.Instant.now()
+        );
+    }
+
+    private String metadataValue(Document document, String key) {
+        if (document == null || document.getMetadata() == null) {
+            return "";
+        }
+        return Objects.toString(document.getMetadata().get(key), "").trim();
+    }
+
+    private String firstNonBlank(String... candidates) {
+        for (String candidate : candidates) {
+            String value = Objects.toString(candidate, "").trim();
+            if (!value.isBlank()) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    private record RetrievedKnowledge(
+            String knowledgeText,
+            List<String> citations,
+            Optional<ActiveDocument> activeDocument
+    ) {
         private static RetrievedKnowledge empty() {
-            return new RetrievedKnowledge("", List.of());
+            return new RetrievedKnowledge("", List.of(), Optional.empty());
         }
     }
 

@@ -31,6 +31,7 @@ public class FeishuWebhookService {
     private final KnowledgeAnswerService knowledgeAnswerService;
     private final FeishuMessageService feishuMessageService;
     private final ConversationMemoryService conversationMemoryService;
+    private final ActiveDocumentService activeDocumentService;
     private final ObjectMapper objectMapper;
     private final ConcurrentMap<String, Instant> processedDeliveries = new ConcurrentHashMap<>();
 
@@ -39,12 +40,14 @@ public class FeishuWebhookService {
             KnowledgeAnswerService knowledgeAnswerService,
             FeishuMessageService feishuMessageService,
             ConversationMemoryService conversationMemoryService,
+            ActiveDocumentService activeDocumentService,
             ObjectMapper objectMapper
     ) {
         this.feishuProperties = feishuProperties;
         this.knowledgeAnswerService = knowledgeAnswerService;
         this.feishuMessageService = feishuMessageService;
         this.conversationMemoryService = conversationMemoryService;
+        this.activeDocumentService = activeDocumentService;
         this.objectMapper = objectMapper;
     }
 
@@ -91,6 +94,7 @@ public class FeishuWebhookService {
 
         if (isNewSessionCommand(customerMessage.text())) {
             conversationMemoryService.clearSession(customerMessage.sessionId());
+            activeDocumentService.clearActiveDocument(customerMessage.sessionId());
             feishuMessageService.replyText(request.event().message().messageId(), NEW_SESSION_REPLY);
             return Optional.of(new ReplyResult(NEW_SESSION_REPLY, "system", List.of()));
         }
