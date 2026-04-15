@@ -113,7 +113,6 @@ public class KnowledgeAnswerService {
             return new ReplyResult(answer, aiProviderProperties.provider(), List.of());
         }
 
-        ChatModel selectedModel = selectChatModel();
         RetrievedKnowledge retrievedKnowledge = retrieveKnowledgeIfEnabled(
                 message.sessionId(),
                 currentQuestion,
@@ -122,6 +121,20 @@ public class KnowledgeAnswerService {
         );
         retrievedKnowledge.activeDocument().ifPresent(activeDocumentService::updateActiveDocument);
         Optional<ActiveDocument> effectiveActiveDocument = retrievedKnowledge.activeDocument().or(() -> activeDocument);
+        if (requiresRetrievedEvidence(taskMode)
+                && retrievedKnowledge.knowledgeText().isBlank()) {
+            String answer = documentInsufficientAnswer(responseLanguage, currentQuestion);
+            if (logger.isDebugEnabled()) {
+                logger.debug(
+                        "answer.documentNoEvidence sessionId={} questionPreview={}",
+                        message.sessionId(),
+                        abbreviate(currentQuestion, 160)
+                );
+            }
+            return new ReplyResult(answer, aiProviderProperties.provider(), retrievedKnowledge.citations());
+        }
+
+        ChatModel selectedModel = selectChatModel();
         String userPrompt = buildUserPrompt(
                 currentQuestion,
                 promptTurns,
@@ -674,6 +687,12 @@ public class KnowledgeAnswerService {
                 || (activeDocument != null && activeDocument.isPresent());
     }
 
+    private boolean requiresRetrievedEvidence(TaskMode taskMode) {
+        return taskMode == TaskMode.DOCUMENT_QA
+                || taskMode == TaskMode.FOLLOW_UP_ON_DOCUMENT
+                || taskMode == TaskMode.DEBUG_RAG;
+    }
+
     private Optional<String> answerSimpleMemoryLookup(
             String currentQuestion,
             SessionContextWindow contextWindow,
@@ -880,19 +899,27 @@ public class KnowledgeAnswerService {
         if (value.length() < 120) {
             return false;
         }
-        String[] sentences = value.split("(?<=[.!?\\u3002\\uFF01\\uFF1F])\\s*");
+        String[] sentences = value.split("(?<=[.!?;:\\u3002\\uFF01\\uFF1F\\uFF1B\\uFF1A])\\s*|\\R+");
         java.util.Map<String, Integer> counts = new java.util.HashMap<>();
         for (String sentence : sentences) {
-            String normalized = sentence.replaceAll("\\s+", "").trim();
-            if (normalized.length() < 12) {
+            String normalized = normalizeRepetitionUnit(sentence);
+            if (normalized.length() < 6) {
                 continue;
             }
             int count = counts.merge(normalized, 1, Integer::sum);
-            if (count >= 3) {
+            int threshold = normalized.length() >= 12 ? 3 : 4;
+            if (count >= threshold) {
                 return true;
             }
         }
         return false;
+    }
+
+    private String normalizeRepetitionUnit(String text) {
+        return Objects.toString(text, "")
+                .replaceAll("\\s+", "")
+                .replaceAll("^[\\p{Punct}\\u3000-\\u303F\\uFF00-\\uFFEF]+", "")
+                .trim();
     }
 
     private String currentDateContext() {

@@ -10,6 +10,8 @@ import com.example.customerservice.config.ConversationMemoryProperties;
 import com.example.customerservice.config.RagProperties;
 import com.example.customerservice.model.ActiveDocument;
 import com.example.customerservice.model.ConversationTurn;
+import com.example.customerservice.model.CustomerMessage;
+import com.example.customerservice.model.ReplyResult;
 import com.example.customerservice.model.SessionContextWindow;
 import com.example.customerservice.model.SessionSummary;
 import com.example.customerservice.model.TaskMode;
@@ -133,6 +135,40 @@ class KnowledgeAnswerServiceTextPolicyTest {
         );
 
         assertTrue(metaResponse);
+    }
+
+    @Test
+    void repeatedChineseColonPhraseIsDetectedAsMetaResponse() throws Exception {
+        boolean metaResponse = (boolean) invoke(
+                "looksLikeMetaResponse",
+                new Class<?>[]{String.class},
+                "\u8fd9\u7bc7\u6587\u7ae0\u6709\u6ca1\u6709\u4ed6\u4eba\u7684\u8bc4\u4ef7\uff1f"
+                        + "\u8fd9\u7bc7\u6587\u7ae0\u7684\u8bc4\u4ef7\u662f\uff1a".repeat(20)
+        );
+
+        assertTrue(metaResponse);
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void repeatedChineseColonPhraseSanitizesToProcessingFallback() throws Exception {
+        Class<?> responseLanguageClass = Class.forName(
+                "com.example.customerservice.service.KnowledgeAnswerService$ResponseLanguage"
+        );
+        Object chinese = Enum.valueOf((Class<? extends Enum>) responseLanguageClass.asSubclass(Enum.class), "CHINESE");
+
+        String answer = (String) invoke(
+                "sanitizeModelAnswer",
+                new Class<?>[]{String.class, responseLanguageClass, String.class},
+                "\u8fd9\u7bc7\u6587\u7ae0\u7684\u8bc4\u4ef7\u662f\uff1a".repeat(20),
+                chinese,
+                "\u8fd9\u7bc7\u6587\u7ae0\u6709\u6ca1\u6709\u4ed6\u4eba\u8bc4\u4ef7"
+        );
+
+        assertEquals(
+                "\u62b1\u6b49\uff0c\u6211\u521a\u624d\u6ca1\u6709\u6b63\u786e\u5904\u7406\u8fd9\u6761\u6d88\u606f\u3002\u8bf7\u76f4\u63a5\u91cd\u65b0\u53d1\u4e00\u6b21\u95ee\u9898\uff0c\u6211\u4f1a\u53ea\u56de\u7b54\u7b54\u6848\u3002",
+                answer
+        );
     }
 
     @Test
@@ -380,6 +416,20 @@ class KnowledgeAnswerServiceTextPolicyTest {
 
         assertEquals("\u6839\u636e\u5f53\u524d\u68c0\u7d22\u5185\u5bb9\uff0c\u6211\u4e0d\u786e\u5b9a\u8fd9\u4e2a\u95ee\u9898\u7684\u7b54\u6848\u3002", answer);
         assertFalse(fallback);
+    }
+
+    @Test
+    void documentQuestionWithoutRetrievedEvidenceReturnsInsufficientAnswer() {
+        ReplyResult result = knowledgeAnswerService.answer(new CustomerMessage(
+                "user-doc",
+                "session-doc-no-evidence",
+                "\u300a\u5bd2\u51b7\u4e2d\u7684\u6e29\u6696\u300b\u4f5c\u8005\u662f\u8c01"
+        ));
+
+        assertEquals(
+                "\u6839\u636e\u5f53\u524d\u68c0\u7d22\u5185\u5bb9\uff0c\u6211\u4e0d\u786e\u5b9a\u8fd9\u4e2a\u95ee\u9898\u7684\u7b54\u6848\u3002",
+                result.answer()
+        );
     }
 
     private Object invoke(String methodName, Class<?>[] parameterTypes, Object... args) throws Exception {
