@@ -36,6 +36,7 @@ import org.springframework.stereotype.Service;
 public class KnowledgeAnswerService {
 
     private static final Logger logger = LoggerFactory.getLogger(KnowledgeAnswerService.class);
+    private static final Pattern EXPLICIT_DOCUMENT_TITLE_PATTERN = Pattern.compile("[《<][^》>]{2,}[》>]");
     private static final Pattern IDENTIFIER_PATTERN = Pattern.compile(
             "\\b[A-Za-z]{2,}[A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)+\\b"
     );
@@ -120,6 +121,7 @@ public class KnowledgeAnswerService {
                 taskMode
         );
         retrievedKnowledge.activeDocument().ifPresent(activeDocumentService::updateActiveDocument);
+        Optional<ActiveDocument> effectiveActiveDocument = retrievedKnowledge.activeDocument().or(() -> activeDocument);
         String userPrompt = buildUserPrompt(
                 currentQuestion,
                 promptTurns,
@@ -129,7 +131,7 @@ public class KnowledgeAnswerService {
                 ambiguousFollowUp,
                 latestTurn.orElse(null),
                 taskMode,
-                activeDocument
+                effectiveActiveDocument
         );
 
         logPromptDecision(
@@ -141,7 +143,7 @@ public class KnowledgeAnswerService {
                 hasRetainedConversationContext,
                 useConversationContext,
                 taskMode,
-                activeDocument,
+                effectiveActiveDocument,
                 contextWindow,
                 userPrompt
         );
@@ -153,7 +155,7 @@ public class KnowledgeAnswerService {
                         responseLanguage,
                         languageSwitchFollowUp,
                         taskMode,
-                        activeDocument.or(retrievedKnowledge::activeDocument)
+                        effectiveActiveDocument
                 ))
                 .user(userPrompt)
                 .call()
@@ -192,7 +194,8 @@ public class KnowledgeAnswerService {
         boolean hasKnowledge = knowledge != null && !knowledge.isBlank();
         boolean documentGrounded = taskMode == TaskMode.DOCUMENT_QA
                 || taskMode == TaskMode.FOLLOW_UP_ON_DOCUMENT
-                || taskMode == TaskMode.DEBUG_RAG;
+                || taskMode == TaskMode.DEBUG_RAG
+                || (activeDocument != null && activeDocument.isPresent());
         String base = Objects.toString(aiProviderProperties.systemPrompt(), "").trim();
         StringBuilder sb = new StringBuilder();
         if (!base.isEmpty()) {
@@ -783,6 +786,9 @@ public class KnowledgeAnswerService {
         if (containsAny(lower, "the current user message is", "the user is asking", "the user is referring to")) {
             return true;
         }
+        if (looksRepetitive(answer)) {
+            return true;
+        }
         String[] lines = lower.split("\\R");
         if (lines.length < 4) {
             return false;
@@ -796,6 +802,26 @@ public class KnowledgeAnswerService {
             }
         }
         return repeatedAdjacentLines >= 2;
+    }
+
+    private boolean looksRepetitive(String answer) {
+        String value = Objects.toString(answer, "").trim();
+        if (value.length() < 120) {
+            return false;
+        }
+        String[] sentences = value.split("(?<=[.!?\\u3002\\uFF01\\uFF1F])\\s*");
+        java.util.Map<String, Integer> counts = new java.util.HashMap<>();
+        for (String sentence : sentences) {
+            String normalized = sentence.replaceAll("\\s+", "").trim();
+            if (normalized.length() < 12) {
+                continue;
+            }
+            int count = counts.merge(normalized, 1, Integer::sum);
+            if (count >= 3) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String currentDateContext() {
@@ -950,13 +976,14 @@ public class KnowledgeAnswerService {
         }
         List<Document> documents;
         try {
+            String retrievalQuery = buildRetrievalQuery(query, activeDocument);
             SearchRequest.Builder builder = SearchRequest.builder()
-                    .query(query)
+                    .query(retrievalQuery)
                     .topK(ragProperties.topK());
             if (ragProperties.similarityThreshold() > 0) {
                 builder = builder.similarityThreshold(ragProperties.similarityThreshold());
             }
-            buildActiveDocumentFilter(activeDocument, taskMode).ifPresent(builder::filterExpression);
+            buildActiveDocumentFilter(activeDocument, query).ifPresent(builder::filterExpression);
             SearchRequest request = builder.build();
             documents = vectorStore.similaritySearch(request);
         } catch (Exception e) {
@@ -996,8 +1023,21 @@ public class KnowledgeAnswerService {
         return new RetrievedKnowledge(knowledgeText, citations, retrievedActiveDocument);
     }
 
-    private Optional<String> buildActiveDocumentFilter(Optional<ActiveDocument> activeDocument, TaskMode taskMode) {
-        if (taskMode != TaskMode.FOLLOW_UP_ON_DOCUMENT || activeDocument == null || activeDocument.isEmpty()) {
+    private String buildRetrievalQuery(String query, Optional<ActiveDocument> activeDocument) {
+        String value = Objects.toString(query, "").trim();
+        if (activeDocument == null || activeDocument.isEmpty() || hasExplicitDocumentTitle(value)) {
+            return value;
+        }
+        ActiveDocument document = activeDocument.orElseThrow();
+        String documentHints = firstNonBlank(document.title(), document.sourceToken(), document.source(), document.documentId());
+        if (documentHints.isBlank()) {
+            return value;
+        }
+        return value + "\nCurrent document: " + documentHints;
+    }
+
+    private Optional<String> buildActiveDocumentFilter(Optional<ActiveDocument> activeDocument, String query) {
+        if (activeDocument == null || activeDocument.isEmpty() || hasExplicitDocumentTitle(query)) {
             return Optional.empty();
         }
         ActiveDocument document = activeDocument.orElseThrow();
@@ -1011,6 +1051,15 @@ public class KnowledgeAnswerService {
             return Optional.of("documentId == '" + escapeFilterValue(document.documentId()) + "'");
         }
         return Optional.empty();
+    }
+
+    @SuppressWarnings("unused")
+    private Optional<String> buildActiveDocumentFilter(Optional<ActiveDocument> activeDocument, TaskMode taskMode) {
+        return buildActiveDocumentFilter(activeDocument, "");
+    }
+
+    private boolean hasExplicitDocumentTitle(String query) {
+        return EXPLICIT_DOCUMENT_TITLE_PATTERN.matcher(Objects.toString(query, "")).find();
     }
 
     private String escapeFilterValue(String value) {
