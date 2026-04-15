@@ -19,7 +19,10 @@ public class TaskModeClassifier {
         String compactChinese = value.replaceAll("\\s+", "");
 
         if (containsAny(normalized, "debug=true", "debug rag", "only retrieved", "retrieval result")
-                || containsAny(compactChinese, "只基于检索", "只根据检索", "调试检索")) {
+                || containsAny(compactChinese,
+                "\u53ea\u57fa\u4e8e\u68c0\u7d22",
+                "\u53ea\u6839\u636e\u68c0\u7d22",
+                "\u8c03\u8bd5\u68c0\u7d22")) {
             return TaskMode.DEBUG_RAG;
         }
 
@@ -32,7 +35,10 @@ public class TaskModeClassifier {
         }
 
         if (containsAny(normalized, "my preference", "remember that", "for me")
-                || containsAny(compactChinese, "以后默认", "我的偏好", "记住我")) {
+                || containsAny(compactChinese,
+                "\u4ee5\u540e\u9ed8\u8ba4",
+                "\u6211\u7684\u504f\u597d",
+                "\u8bb0\u4f4f\u6211")) {
             return TaskMode.PERSONALIZED_CHAT;
         }
 
@@ -54,9 +60,28 @@ public class TaskModeClassifier {
             return true;
         }
         return containsAny(compactChinese,
-                "这篇", "该文档", "这个文档", "那篇", "这份文档",
-                "这段", "上一段", "上文", "第二个作者", "第一作者",
-                "继续", "展开说说", "详细点", "它的", "其中");
+                "\u8fd9\u7bc7",
+                "\u8be5\u6587\u6863",
+                "\u8fd9\u4e2a\u6587\u6863",
+                "\u90a3\u7bc7",
+                "\u8fd9\u4efd\u6587\u6863",
+                "\u8fd9\u7bc7\u6587\u7ae0",
+                "\u8fd9\u7bc7\u4f5c\u6587",
+                "\u8fd9\u7bc7\u62a5\u544a",
+                "\u8fd9\u6bb5",
+                "\u4e0a\u4e00\u6bb5",
+                "\u4e0a\u6587",
+                "\u7b2c\u4e8c\u4e2a\u4f5c\u8005",
+                "\u7b2c\u4e00\u4f5c\u8005",
+                "\u6307\u5bfc\u8001\u5e08",
+                "\u81ea\u6211\u8bc4\u4ef7",
+                "\u4ed6\u4eba\u8bc4\u4ef7",
+                "\u5176\u4ed6\u4eba\u8bc4\u4ef7",
+                "\u7ee7\u7eed",
+                "\u5c55\u5f00\u8bf4\u8bf4",
+                "\u8be6\u7ec6\u70b9",
+                "\u5b83\u7684",
+                "\u5176\u4e2d");
     }
 
     private boolean isDocumentQuestion(String normalized, String compactChinese) {
@@ -64,7 +89,17 @@ public class TaskModeClassifier {
                 "document", "paper", "article", "author", "citation", "source",
                 "according to", "based on")
                 || containsAny(compactChinese,
-                "文档", "论文", "文章", "作者", "引用", "出处", "根据", "基于", "知识库");
+                "\u6587\u6863",
+                "\u8bba\u6587",
+                "\u6587\u7ae0",
+                "\u4f5c\u6587",
+                "\u62a5\u544a",
+                "\u4f5c\u8005",
+                "\u5f15\u7528",
+                "\u51fa\u5904",
+                "\u6839\u636e",
+                "\u57fa\u4e8e",
+                "\u77e5\u8bc6\u5e93");
     }
 
     private boolean containsAny(String text, String... fragments) {

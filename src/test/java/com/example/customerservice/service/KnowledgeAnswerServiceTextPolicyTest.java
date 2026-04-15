@@ -114,6 +114,17 @@ class KnowledgeAnswerServiceTextPolicyTest {
     }
 
     @Test
+    void translatedPromptLeakPatternIsDetected() throws Exception {
+        boolean promptLeak = (boolean) invoke(
+                "looksLikePromptLeak",
+                new Class<?>[]{String.class},
+                "\u5f53\u524d\u7528\u6237\u6d88\u606f\uff1a\n\u8fd9\u7bc7\u6587\u7ae0\u6709\u6ca1\u6709\u4ed6\u4eba\u8bc4\u4ef7\uff1f\n\u9996\u9009\u56de\u590d\u8bed\u8a00\uff1a\u7b80\u4f53\u4e2d\u6587"
+        );
+
+        assertTrue(promptLeak);
+    }
+
+    @Test
     void metaResponsePatternIsDetected() throws Exception {
         boolean metaResponse = (boolean) invoke(
                 "looksLikeMetaResponse",
@@ -232,6 +243,36 @@ class KnowledgeAnswerServiceTextPolicyTest {
     }
 
     @Test
+    void chineseDocumentFollowUpIsClassifiedWhenActiveDocumentExists() {
+        ActiveDocument activeDocument = new ActiveDocument(
+                "session-doc",
+                "doc-token",
+                "\u5bd2\u51b7\u4e2d\u7684\u6e29\u6696",
+                "feishu-docx:doc-token",
+                "doc-token",
+                Instant.now()
+        );
+
+        TaskMode taskMode = new TaskModeClassifier().classify(
+                "\u8fd9\u7bc7\u6587\u7ae0\u6709\u6ca1\u6709\u4ed6\u4eba\u8bc4\u4ef7",
+                Optional.of(activeDocument)
+        );
+
+        assertEquals(TaskMode.FOLLOW_UP_ON_DOCUMENT, taskMode);
+    }
+
+    @Test
+    void chineseBookTitleIsRecognizedAsExplicitDocumentTitle() throws Exception {
+        boolean explicitTitle = (boolean) invoke(
+                "hasExplicitDocumentTitle",
+                new Class<?>[]{String.class},
+                "\u300a\u5bd2\u51b7\u4e2d\u7684\u6e29\u6696\u300b\u4f5c\u8005\u662f\u8c01"
+        );
+
+        assertTrue(explicitTitle);
+    }
+
+    @Test
     void retainedConversationContextIsDetected() throws Exception {
         SessionContextWindow contextWindow = new SessionContextWindow(
                 "session-1",
@@ -315,6 +356,30 @@ class KnowledgeAnswerServiceTextPolicyTest {
         );
 
         assertTrue(fallback);
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void documentInsufficientAnswerIsNotProcessingFallback() throws Exception {
+        Class<?> responseLanguageClass = Class.forName(
+                "com.example.customerservice.service.KnowledgeAnswerService$ResponseLanguage"
+        );
+        Object chinese = Enum.valueOf((Class<? extends Enum>) responseLanguageClass.asSubclass(Enum.class), "CHINESE");
+
+        String answer = (String) invoke(
+                "documentInsufficientAnswer",
+                new Class<?>[]{responseLanguageClass, String.class},
+                chinese,
+                "\u8fd9\u7bc7\u6587\u7ae0\u6709\u6ca1\u6709\u4ed6\u4eba\u8bc4\u4ef7"
+        );
+        boolean fallback = (boolean) invoke(
+                "isProcessingFallbackAnswer",
+                new Class<?>[]{String.class},
+                answer
+        );
+
+        assertEquals("\u6839\u636e\u5f53\u524d\u68c0\u7d22\u5185\u5bb9\uff0c\u6211\u4e0d\u786e\u5b9a\u8fd9\u4e2a\u95ee\u9898\u7684\u7b54\u6848\u3002", answer);
+        assertFalse(fallback);
     }
 
     private Object invoke(String methodName, Class<?>[] parameterTypes, Object... args) throws Exception {

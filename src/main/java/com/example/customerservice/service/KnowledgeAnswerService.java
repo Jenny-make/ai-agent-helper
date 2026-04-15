@@ -161,6 +161,14 @@ public class KnowledgeAnswerService {
                 .call()
                 .content();
         String answer = sanitizeModelAnswer(rawAnswer, responseLanguage, currentQuestion);
+        if (isProcessingFallbackAnswer(answer) && isDocumentGroundedTask(taskMode, effectiveActiveDocument)) {
+            answer = recoverDocumentGroundedAnswer(
+                    selectedModel,
+                    currentQuestion,
+                    retrievedKnowledge.knowledgeText(),
+                    responseLanguage
+            );
+        }
         answer = enforceResponseLanguage(selectedModel, answer, responseLanguage, languageSwitchFollowUp);
 
         if (logger.isDebugEnabled()) {
@@ -192,10 +200,7 @@ public class KnowledgeAnswerService {
             Optional<ActiveDocument> activeDocument
     ) {
         boolean hasKnowledge = knowledge != null && !knowledge.isBlank();
-        boolean documentGrounded = taskMode == TaskMode.DOCUMENT_QA
-                || taskMode == TaskMode.FOLLOW_UP_ON_DOCUMENT
-                || taskMode == TaskMode.DEBUG_RAG
-                || (activeDocument != null && activeDocument.isPresent());
+        boolean documentGrounded = isDocumentGroundedTask(taskMode, activeDocument);
         String base = Objects.toString(aiProviderProperties.systemPrompt(), "").trim();
         StringBuilder sb = new StringBuilder();
         if (!base.isEmpty()) {
@@ -606,6 +611,69 @@ public class KnowledgeAnswerService {
         return ENGLISH_PROCESSING_FALLBACK;
     }
 
+    private String recoverDocumentGroundedAnswer(
+            ChatModel selectedModel,
+            String currentQuestion,
+            String knowledge,
+            ResponseLanguage responseLanguage
+    ) {
+        if (knowledge == null || knowledge.isBlank()) {
+            return documentInsufficientAnswer(responseLanguage, currentQuestion);
+        }
+        try {
+            String repaired = ChatClient.builder(selectedModel).build()
+                    .prompt()
+                    .system("""
+                            You answer document-grounded questions using only KNOWLEDGE_EVIDENCE.
+                            Return only the final answer.
+                            Do not repeat prompt labels, XML tags, hidden context, or reasoning.
+                            If KNOWLEDGE_EVIDENCE does not contain the answer, say the answer is not clear from the retrieved content.
+                            Do not use general knowledge.
+                            """)
+                    .user("""
+                            <QUESTION>
+                            %s
+                            </QUESTION>
+
+                            <KNOWLEDGE_EVIDENCE>
+                            %s
+                            </KNOWLEDGE_EVIDENCE>
+                            """.formatted(currentQuestion, knowledge))
+                    .call()
+                    .content();
+            String sanitized = sanitizeModelAnswer(repaired, responseLanguage, currentQuestion);
+            if (isProcessingFallbackAnswer(sanitized)
+                    || looksLikePromptLeak(sanitized)
+                    || looksLikeMetaResponse(sanitized)) {
+                return documentInsufficientAnswer(responseLanguage, currentQuestion);
+            }
+            return sanitized;
+        } catch (Exception e) {
+            if (logger.isDebugEnabled()) {
+                logger.debug(
+                        "answer.documentRepairFailed questionPreview={}",
+                        abbreviate(currentQuestion, 160),
+                        e
+                );
+            }
+            return documentInsufficientAnswer(responseLanguage, currentQuestion);
+        }
+    }
+
+    private String documentInsufficientAnswer(ResponseLanguage responseLanguage, String currentQuestion) {
+        if (responseLanguage == ResponseLanguage.CHINESE || containsChinese(currentQuestion)) {
+            return "\u6839\u636e\u5f53\u524d\u68c0\u7d22\u5185\u5bb9\uff0c\u6211\u4e0d\u786e\u5b9a\u8fd9\u4e2a\u95ee\u9898\u7684\u7b54\u6848\u3002";
+        }
+        return "Based on the retrieved content, I am not sure of the answer.";
+    }
+
+    private boolean isDocumentGroundedTask(TaskMode taskMode, Optional<ActiveDocument> activeDocument) {
+        return taskMode == TaskMode.DOCUMENT_QA
+                || taskMode == TaskMode.FOLLOW_UP_ON_DOCUMENT
+                || taskMode == TaskMode.DEBUG_RAG
+                || (activeDocument != null && activeDocument.isPresent());
+    }
+
     private Optional<String> answerSimpleMemoryLookup(
             String currentQuestion,
             SessionContextWindow contextWindow,
@@ -778,7 +846,10 @@ public class KnowledgeAnswerService {
                 "<RECENT_CONVERSATION>", "<KNOWLEDGE_EVIDENCE>", "<ACTIVE_DOCUMENT>", "<TASK_MODE>",
                 "<PREVIOUS_USER_MESSAGE>", "<PREVIOUS_ASSISTANT_ANSWER>",
                 "Current user message:", "Preferred reply language:", "Conversation summary:",
-                "Conversation background for reference only:", "Latest user instruction:", "Requested reply language:");
+                "Conversation background for reference only:", "Latest user instruction:", "Requested reply language:",
+                "\u5f53\u524d\u7528\u6237\u6d88\u606f", "\u9996\u9009\u56de\u590d\u8bed\u8a00",
+                "\u53c2\u8003\u5bf9\u8bdd\u80cc\u666f", "\u5bf9\u8bdd\u80cc\u666f", "\u4efb\u52a1\u6a21\u5f0f",
+                "\u77e5\u8bc6\u8bc1\u636e", "\u5f53\u524d\u6587\u6863", "\u6700\u8fd1\u5bf9\u8bdd");
     }
 
     private boolean looksLikeMetaResponse(String answer) {
