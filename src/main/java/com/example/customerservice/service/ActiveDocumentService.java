@@ -7,6 +7,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcOperations;
@@ -18,6 +19,7 @@ public class ActiveDocumentService {
     private final JdbcOperations jdbcOperations;
     private final ConcurrentMap<String, ActiveDocument> activeDocuments = new ConcurrentHashMap<>();
 
+    @Autowired
     public ActiveDocumentService(ObjectProvider<JdbcOperations> jdbcOperationsProvider) {
         this.jdbcOperations = jdbcOperationsProvider == null ? null : jdbcOperationsProvider.getIfAvailable();
     }
