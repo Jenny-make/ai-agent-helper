@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,6 +34,13 @@ import org.springframework.stereotype.Service;
 public class KnowledgeAnswerService {
 
     private static final Logger logger = LoggerFactory.getLogger(KnowledgeAnswerService.class);
+    private static final Pattern IDENTIFIER_PATTERN = Pattern.compile(
+            "\\b[A-Za-z]{2,}[A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)+\\b"
+    );
+    private static final String CHINESE_PROCESSING_FALLBACK =
+            "\u62b1\u6b49\uff0c\u6211\u521a\u624d\u6ca1\u6709\u6b63\u786e\u5904\u7406\u8fd9\u6761\u6d88\u606f\u3002\u8bf7\u76f4\u63a5\u91cd\u65b0\u53d1\u4e00\u6b21\u95ee\u9898\uff0c\u6211\u4f1a\u53ea\u56de\u7b54\u7b54\u6848\u3002";
+    private static final String ENGLISH_PROCESSING_FALLBACK =
+            "Sorry, I didn't process that message correctly. Please send the question again and I'll answer directly.";
 
     private final AiProviderProperties aiProviderProperties;
     private final RagProperties ragProperties;
@@ -78,6 +87,17 @@ public class KnowledgeAnswerService {
             return new ReplyResult(buildClarifyingQuestion(currentQuestion), aiProviderProperties.provider(), List.of());
         }
 
+        Optional<String> directMemoryAnswer = answerSimpleMemoryLookup(
+                currentQuestion,
+                contextWindow,
+                responseLanguage
+        );
+        if (directMemoryAnswer.isPresent()) {
+            String answer = directMemoryAnswer.orElseThrow();
+            conversationMemoryService.appendExchange(message.sessionId(), currentQuestion, answer);
+            return new ReplyResult(answer, aiProviderProperties.provider(), List.of());
+        }
+
         ChatModel selectedModel = selectChatModel();
         RetrievedKnowledge retrievedKnowledge = retrieveKnowledgeIfEnabled(currentQuestion);
         String userPrompt = buildUserPrompt(
@@ -120,7 +140,11 @@ public class KnowledgeAnswerService {
             );
         }
 
-        conversationMemoryService.appendExchange(message.sessionId(), currentQuestion, answer);
+        if (!isProcessingFallbackAnswer(answer)) {
+            conversationMemoryService.appendExchange(message.sessionId(), currentQuestion, answer);
+        } else if (logger.isDebugEnabled()) {
+            logger.debug("answer.memorySkip sessionId={} reason=processingFallback", message.sessionId());
+        }
         return new ReplyResult(answer, aiProviderProperties.provider(), retrievedKnowledge.citations());
     }
 
@@ -444,9 +468,87 @@ public class KnowledgeAnswerService {
             return value;
         }
         if (responseLanguage == ResponseLanguage.CHINESE || containsChinese(currentQuestion)) {
-            return "\u62b1\u6b49\uff0c\u6211\u521a\u624d\u6ca1\u6709\u6b63\u786e\u5904\u7406\u8fd9\u6761\u6d88\u606f\u3002\u8bf7\u76f4\u63a5\u91cd\u65b0\u53d1\u4e00\u6b21\u95ee\u9898\uff0c\u6211\u4f1a\u53ea\u56de\u7b54\u7b54\u6848\u3002";
+            return CHINESE_PROCESSING_FALLBACK;
         }
-        return "Sorry, I didn't process that message correctly. Please send the question again and I'll answer directly.";
+        return ENGLISH_PROCESSING_FALLBACK;
+    }
+
+    private Optional<String> answerSimpleMemoryLookup(
+            String currentQuestion,
+            SessionContextWindow contextWindow,
+            ResponseLanguage responseLanguage
+    ) {
+        if (!isSimpleMemoryLookupQuestion(currentQuestion) || contextWindow == null) {
+            return Optional.empty();
+        }
+        List<ConversationTurn> turns = contextWindow.recentTurns();
+        for (int i = turns.size() - 1; i >= 0; i--) {
+            ConversationTurn turn = turns.get(i);
+            Optional<String> candidate = findIdentifierInText(turn.userMessage())
+                    .or(() -> findIdentifierInText(turn.assistantMessage()));
+            if (candidate.isPresent()) {
+                return Optional.of(formatSimpleMemoryAnswer(
+                        currentQuestion,
+                        candidate.orElseThrow(),
+                        responseLanguage
+                ));
+            }
+        }
+        return contextWindow.summary()
+                .flatMap(summary -> findIdentifierInText(summary.summary()))
+                .map(candidate -> formatSimpleMemoryAnswer(currentQuestion, candidate, responseLanguage));
+    }
+
+    private boolean isSimpleMemoryLookupQuestion(String text) {
+        String normalized = normalizeIntentText(text);
+        return containsAny(normalized,
+                "\u8ba2\u5355\u53f7", "\u6d4b\u8bd5\u7801", "\u7f16\u53f7", "\u7f16\u7801",
+                "order number", "order id", "test code", "tracking code");
+    }
+
+    private Optional<String> findIdentifierInText(String text) {
+        String value = Objects.toString(text, "");
+        Matcher matcher = IDENTIFIER_PATTERN.matcher(value);
+        String latest = "";
+        while (matcher.find()) {
+            String candidate = matcher.group();
+            if (isUsefulIdentifier(candidate)) {
+                latest = candidate;
+            }
+        }
+        return latest.isBlank() ? Optional.empty() : Optional.of(latest);
+    }
+
+    private boolean isUsefulIdentifier(String candidate) {
+        String value = Objects.toString(candidate, "").trim();
+        if (value.length() < 5) {
+            return false;
+        }
+        String upper = value.toUpperCase(Locale.ROOT);
+        return !containsAny(upper, "CURRENT_USER_MESSAGE", "RECENT_CONVERSATION", "CONVERSATION_SUMMARY");
+    }
+
+    private String formatSimpleMemoryAnswer(
+            String currentQuestion,
+            String identifier,
+            ResponseLanguage responseLanguage
+    ) {
+        boolean chinese = responseLanguage == ResponseLanguage.CHINESE || containsChinese(currentQuestion);
+        if (!chinese) {
+            return "It is " + identifier + ".";
+        }
+        if (currentQuestion.contains("\u8ba2\u5355\u53f7")) {
+            return "\u4f60\u7684\u4e34\u65f6\u8ba2\u5355\u53f7\u662f " + identifier + "\u3002";
+        }
+        if (currentQuestion.contains("\u6d4b\u8bd5\u7801")) {
+            return "\u521a\u624d\u7684\u6d4b\u8bd5\u7801\u662f " + identifier + "\u3002";
+        }
+        return "\u662f " + identifier + "\u3002";
+    }
+
+    private boolean isProcessingFallbackAnswer(String answer) {
+        String value = Objects.toString(answer, "").trim();
+        return CHINESE_PROCESSING_FALLBACK.equals(value) || ENGLISH_PROCESSING_FALLBACK.equals(value);
     }
 
     private String enforceResponseLanguage(

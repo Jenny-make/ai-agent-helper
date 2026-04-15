@@ -188,6 +188,54 @@ class KnowledgeAnswerServiceTextPolicyTest {
         assertTrue(languageSwitchFollowUp);
     }
 
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void simpleIdentifierLookupCanAnswerFromConversationMemory() throws Exception {
+        Class<?> responseLanguageClass = Class.forName(
+                "com.example.customerservice.service.KnowledgeAnswerService$ResponseLanguage"
+        );
+        Object chinese = Enum.valueOf((Class<? extends Enum>) responseLanguageClass.asSubclass(Enum.class), "CHINESE");
+        SessionContextWindow contextWindow = new SessionContextWindow(
+                "session-identifier",
+                List.of(),
+                List.of(new ConversationTurn(
+                        "\u6211\u7684\u4e34\u65f6\u8ba2\u5355\u53f7\u662f ORDER-0415-A7\u3002\u8bf7\u56de\u590d\u201c\u5df2\u8bb0\u5f55\u201d\u3002",
+                        "\u60a8\u7684\u4e34\u65f6\u8ba2\u5355\u53f7\u662f ORDER-0415-A7\u3002\u5df2\u8bb0\u5f55\u3002"
+                )),
+                List.of(new ConversationTurn(
+                        "\u6211\u7684\u4e34\u65f6\u8ba2\u5355\u53f7\u662f ORDER-0415-A7\u3002\u8bf7\u56de\u590d\u201c\u5df2\u8bb0\u5f55\u201d\u3002",
+                        "\u60a8\u7684\u4e34\u65f6\u8ba2\u5355\u53f7\u662f ORDER-0415-A7\u3002\u5df2\u8bb0\u5f55\u3002"
+                )),
+                Optional.of(new ConversationTurn(
+                        "\u6211\u7684\u4e34\u65f6\u8ba2\u5355\u53f7\u662f ORDER-0415-A7\u3002\u8bf7\u56de\u590d\u201c\u5df2\u8bb0\u5f55\u201d\u3002",
+                        "\u60a8\u7684\u4e34\u65f6\u8ba2\u5355\u53f7\u662f ORDER-0415-A7\u3002\u5df2\u8bb0\u5f55\u3002"
+                )),
+                Optional.empty()
+        );
+
+        Optional<String> answer = (Optional<String>) invoke(
+                "answerSimpleMemoryLookup",
+                new Class<?>[]{String.class, SessionContextWindow.class, responseLanguageClass},
+                "\u6211\u7684\u4e34\u65f6\u8ba2\u5355\u53f7\u662f\u4ec0\u4e48\uff1f",
+                contextWindow,
+                chinese
+        );
+
+        assertTrue(answer.isPresent());
+        assertEquals("\u4f60\u7684\u4e34\u65f6\u8ba2\u5355\u53f7\u662f ORDER-0415-A7\u3002", answer.orElseThrow());
+    }
+
+    @Test
+    void processingFallbackIsDetected() throws Exception {
+        boolean fallback = (boolean) invoke(
+                "isProcessingFallbackAnswer",
+                new Class<?>[]{String.class},
+                "\u62b1\u6b49\uff0c\u6211\u521a\u624d\u6ca1\u6709\u6b63\u786e\u5904\u7406\u8fd9\u6761\u6d88\u606f\u3002\u8bf7\u76f4\u63a5\u91cd\u65b0\u53d1\u4e00\u6b21\u95ee\u9898\uff0c\u6211\u4f1a\u53ea\u56de\u7b54\u7b54\u6848\u3002"
+        );
+
+        assertTrue(fallback);
+    }
+
     private Object invoke(String methodName, Class<?>[] parameterTypes, Object... args) throws Exception {
         Method method = KnowledgeAnswerService.class.getDeclaredMethod(methodName, parameterTypes);
         method.setAccessible(true);
